@@ -57,7 +57,8 @@ enum class ErrorCode : std::uint16_t {
     ResourceLimitExceeded,
     OperationFailure,
     InternalServerError,
-    Disconnected
+    Disconnected,
+    Unauthorized
 };
 
 struct EnvelopeInfo {
@@ -73,6 +74,7 @@ struct HelloRequestData {
     std::uint16_t minimumMinor = 0;
     std::uint16_t maximumMinor = 0;
     std::uint32_t maximumFrameBytes = 0;
+    std::string sessionToken;
 };
 
 struct HelloResponseData {

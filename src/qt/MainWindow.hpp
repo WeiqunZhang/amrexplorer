@@ -90,10 +90,10 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
 
     void openDataset(const std::filesystem::path& path, bool metadataOnly = false);
-    void openRemoteDataset(
-        std::string host, std::uint16_t port, std::string remotePath);
+    void openRemoteDataset(std::string host, std::uint16_t port,
+        std::string remotePath, std::string token);
     void openRemoteSequence(std::string host, std::uint16_t port,
-        const std::vector<std::string>& remotePaths);
+        const std::vector<std::string>& remotePaths, std::string token);
     // Opens a plotfile sequence (the legacy "-a" file animation): frames are
     // the plotfile directories, sorted by name; requires at least two valid
     // plotfiles. Opening a single dataset closes the sequence again.
@@ -300,7 +300,8 @@ private:
         std::optional<PlotfileMetadataResult> preparedMetadata,
         std::filesystem::path dataRoot, bool preserveFabSelector,
         std::optional<FrameSliceSpec> initialSpec,
-        std::optional<std::tuple<std::string, std::uint16_t, std::string>>
+        std::optional<
+            std::tuple<std::string, std::uint16_t, std::string, std::string>>
             remoteOpen = std::nullopt);
     void viewFab(std::size_t entry);
     void backToMultiFab();
@@ -660,6 +661,7 @@ private:
     std::filesystem::path m_datasetPath;
     std::string m_remoteHost;
     std::uint16_t m_remotePort = 0;
+    std::string m_remoteToken;
     bool m_remoteSequence = false;
     struct MultiFabReturnState {
         std::filesystem::path path;

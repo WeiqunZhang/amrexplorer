@@ -15,6 +15,11 @@ struct ServerOptions {
     std::uint32_t maximumDatasets = 8;
     std::uint32_t maximumOutstandingRequests = 64;
     std::string softwareVersion = "unknown";
+    // Per-session access token. Clients must present a byte-identical token in
+    // their handshake or the connection is refused. Left empty, the server
+    // generates a fresh random token at construction; there is no way to
+    // disable the check. See token().
+    std::string sessionToken;
 };
 
 class Server {
@@ -26,6 +31,9 @@ public:
     Server& operator=(const Server&) = delete;
 
     [[nodiscard]] std::uint16_t port() const noexcept;
+    // The access token clients must present. Either the token supplied in
+    // ServerOptions or, when that was empty, the one generated at construction.
+    [[nodiscard]] const std::string& token() const noexcept;
     void run();
     void requestStop() noexcept;
 

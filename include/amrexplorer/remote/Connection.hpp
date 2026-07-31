@@ -18,6 +18,9 @@ struct ConnectionOptions {
     std::string clientName = "AMReXplorer";
     std::string softwareVersion = "unknown";
     std::uint32_t maximumFrameBytes = defaultMaximumFrameBytes;
+    // Access token printed by the server at startup. Required: a server always
+    // enforces a token, so an empty value here is rejected at the handshake.
+    std::string sessionToken;
 };
 
 class Connection {

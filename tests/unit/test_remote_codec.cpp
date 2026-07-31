@@ -34,14 +34,18 @@ int main()
     using namespace amrvis;
     using namespace amrvis::remote;
 
-    HelloRequestData hello{"codec test", "1", 0, protocolMinor, 4096};
+    HelloRequestData hello{"codec test", "1", 0, protocolMinor, 4096,
+        "0123456789abcdef0123456789abcdef"};
     auto bytes = codec::encode(7, codec::toWire(hello));
     auto envelope = codec::decode(bytes);
     require(codec::inspect(*envelope).requestId == 7,
         "hello request ID did not round-trip");
-    require(codec::fromWire(*envelope->payload.AsHelloRequest()).clientName
-            == hello.clientName,
+    const auto decodedHello
+        = codec::fromWire(*envelope->payload.AsHelloRequest());
+    require(decodedHello.clientName == hello.clientName,
         "hello payload did not round-trip");
+    require(decodedHello.sessionToken == hello.sessionToken,
+        "hello session token did not round-trip");
     OpenedDataset opened;
     opened.id = DatasetId{9};
     opened.catalog.dimension = 3;

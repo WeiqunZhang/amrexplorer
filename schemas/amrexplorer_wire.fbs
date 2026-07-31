@@ -38,7 +38,8 @@ enum ErrorCode : ushort {
   ResourceLimitExceeded,
   OperationFailure,
   InternalServerError,
-  Disconnected
+  Disconnected,
+  Unauthorized
 }
 
 table Int3 {
@@ -76,6 +77,7 @@ table HelloRequest {
   minimum_minor:ushort;
   maximum_minor:ushort;
   maximum_frame_bytes:uint;
+  session_token:string;
 }
 
 table HelloResponse {

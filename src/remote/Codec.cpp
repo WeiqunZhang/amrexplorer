@@ -89,7 +89,7 @@ fb::ErrorCode toWireError(ErrorCode value)
 ErrorCode fromWireError(fb::ErrorCode value)
 {
     const auto raw = static_cast<std::uint16_t>(value);
-    if (raw > static_cast<std::uint16_t>(ErrorCode::Disconnected)) {
+    if (raw > static_cast<std::uint16_t>(ErrorCode::Unauthorized)) {
         throw std::invalid_argument("unknown wire error code");
     }
     return static_cast<ErrorCode>(raw);
@@ -246,6 +246,7 @@ fb::HelloRequestT toWire(const HelloRequestData& value)
     wire.minimum_minor = value.minimumMinor;
     wire.maximum_minor = value.maximumMinor;
     wire.maximum_frame_bytes = value.maximumFrameBytes;
+    wire.session_token = value.sessionToken;
     return wire;
 }
 
@@ -257,6 +258,7 @@ HelloRequestData fromWire(const fb::HelloRequestT& value)
     result.minimumMinor = value.minimum_minor;
     result.maximumMinor = value.maximum_minor;
     result.maximumFrameBytes = value.maximum_frame_bytes;
+    result.sessionToken = value.session_token;
     return result;
 }
 

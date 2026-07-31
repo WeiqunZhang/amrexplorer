@@ -7,13 +7,17 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -120,6 +124,39 @@ private:
     bool m_stopping = false;
     std::vector<JoiningThread> m_threads;
 };
+
+// A fresh 128-bit token rendered as 32 lowercase hex characters. Drawn from
+// std::random_device, which maps to the operating-system CSPRNG on the
+// platforms this server targets (/dev/urandom on Linux/macOS, CryptGenRandom
+// on Windows).
+std::string generateSessionToken()
+{
+    std::random_device device;
+    static constexpr char digits[] = "0123456789abcdef";
+    constexpr int byteCount = 16;
+    std::string token;
+    token.reserve(static_cast<std::size_t>(byteCount) * 2);
+    for (int index = 0; index < byteCount; ++index) {
+        const auto value = static_cast<unsigned>(device()) & 0xFFu;
+        token.push_back(digits[(value >> 4) & 0xFu]);
+        token.push_back(digits[value & 0xFu]);
+    }
+    return token;
+}
+
+// Length-independent-of-content comparison, so a rejected handshake does not
+// leak how many leading bytes matched. The token length itself is not secret.
+bool constantTimeEquals(std::string_view lhs, std::string_view rhs)
+{
+    std::size_t difference = lhs.size() ^ rhs.size();
+    for (std::size_t index = 0; index < lhs.size(); ++index) {
+        const auto other = index < rhs.size()
+            ? static_cast<unsigned char>(rhs[index])
+            : 0U;
+        difference |= static_cast<unsigned char>(lhs[index]) ^ other;
+    }
+    return difference == 0;
+}
 
 ErrorData classifyError(const std::exception& error)
 {
@@ -266,6 +303,13 @@ private:
             || request->maximum_minor < request->minimum_minor) {
             sendError(envelope.request_id, {ErrorCode::UnsupportedProtocol,
                 "client protocol range is unsupported"});
+            stop();
+            return;
+        }
+        if (!constantTimeEquals(
+                request->session_token, m_options.sessionToken)) {
+            sendError(envelope.request_id, {ErrorCode::Unauthorized,
+                "invalid or missing session token"});
             stop();
             return;
         }
@@ -693,6 +737,9 @@ public:
         , m_workers(resolveWorkerCount(m_options.workerCount))
     {
         m_options.workerCount = resolveWorkerCount(m_options.workerCount);
+        if (m_options.sessionToken.empty()) {
+            m_options.sessionToken = generateSessionToken();
+        }
     }
 
     ~Impl()
@@ -703,6 +750,11 @@ public:
     std::uint16_t port() const noexcept
     {
         return m_listener.port;
+    }
+
+    const std::string& token() const noexcept
+    {
+        return m_options.sessionToken;
     }
 
     void run()
@@ -779,6 +831,11 @@ Server::~Server() = default;
 std::uint16_t Server::port() const noexcept
 {
     return m_impl->port();
+}
+
+const std::string& Server::token() const noexcept
+{
+    return m_impl->token();
 }
 
 void Server::run()

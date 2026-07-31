@@ -5,19 +5,51 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 
 namespace amrvis::qt {
 
-inline std::optional<std::pair<std::string, std::uint16_t>>
-parseRemoteEndpoint(std::string_view text)
+struct RemoteEndpoint {
+    std::string host;
+    std::uint16_t port = 0;
+    // Access token, empty when the input carried none (the caller then prompts
+    // for it separately). An inline token may be appended as HOST:PORT#TOKEN.
+    std::string token;
+};
+
+inline std::optional<RemoteEndpoint> parseRemoteEndpoint(std::string_view text)
 {
-    const auto separator = text.rfind(':');
+    // Peel an optional inline token off the end first, so a token that happens
+    // to contain ':' cannot confuse the host/port split below.
+    std::string token;
+    std::string_view hostPort = text;
+    if (const auto hash = text.find('#'); hash != std::string_view::npos) {
+        auto tokenView = text.substr(hash + 1);
+        while (!tokenView.empty()
+            && (tokenView.front() == ' ' || tokenView.front() == '\t')) {
+            tokenView.remove_prefix(1);
+        }
+        while (!tokenView.empty()
+            && (tokenView.back() == ' ' || tokenView.back() == '\t')) {
+            tokenView.remove_suffix(1);
+        }
+        token = std::string(tokenView);
+        hostPort = text.substr(0, hash);
+    }
+    while (!hostPort.empty()
+        && (hostPort.back() == ' ' || hostPort.back() == '\t')) {
+        hostPort.remove_suffix(1);
+    }
+    while (!hostPort.empty()
+        && (hostPort.front() == ' ' || hostPort.front() == '\t')) {
+        hostPort.remove_prefix(1);
+    }
+
+    const auto separator = hostPort.rfind(':');
     if (separator == std::string_view::npos || separator == 0
-        || separator + 1 == text.size()) {
+        || separator + 1 == hostPort.size()) {
         return std::nullopt;
     }
-    auto host = text.substr(0, separator);
+    auto host = hostPort.substr(0, separator);
     if (host.size() >= 2 && host.front() == '[' && host.back() == ']') {
         host.remove_prefix(1);
         host.remove_suffix(1);
@@ -26,14 +58,15 @@ parseRemoteEndpoint(std::string_view text)
         return std::nullopt;
     }
     unsigned int port = 0;
-    const auto portText = text.substr(separator + 1);
+    const auto portText = hostPort.substr(separator + 1);
     const auto [end, error] = std::from_chars(
         portText.data(), portText.data() + portText.size(), port);
     if (error != std::errc{} || end != portText.data() + portText.size()
         || port == 0 || port > 65535) {
         return std::nullopt;
     }
-    return std::pair{std::string(host), static_cast<std::uint16_t>(port)};
+    return RemoteEndpoint{std::string(host),
+        static_cast<std::uint16_t>(port), std::move(token)};
 }
 
 } // namespace amrvis::qt
