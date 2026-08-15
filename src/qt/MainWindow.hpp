@@ -202,6 +202,9 @@ public:
     [[nodiscard]] bool activeViewScrollBarsVisibleForTest() const;
     [[nodiscard]] bool activeViewHasPhysicalAspectForTest(
         double expectedAspect) const;
+    // Test-only: true when the last replacement received its final view window
+    // as part of setImage and that window lies inside the arriving raster.
+    [[nodiscard]] bool activeViewReplacementWindowIsBoundedForTest() const;
     [[nodiscard]] bool fabStateClearedForTest() const;
     // Test-only: how many failures have been reported non-modally. The FAB
     // rollback smoke tests assert on this so a passing run proves the failure
@@ -224,6 +227,7 @@ public:
     // the same handler used by ImageView::rubberBandSelected.
     void rubberBandZoomActiveViewForTest();
     void rubberBandZoomRectangularActiveViewForTest();
+    void rubberBandZoomTallActiveViewForTest();
 
     // Test-only: true when every current panel has a strict visible subregion.
     // Used to lock down synchronized 3-D rubber-band zoom.

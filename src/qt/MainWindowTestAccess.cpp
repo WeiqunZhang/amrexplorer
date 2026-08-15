@@ -269,6 +269,21 @@ bool MainWindow::activeViewHasPhysicalAspectForTest(
         <= 0.02 * expectedAspect;
 }
 
+bool MainWindow::activeViewReplacementWindowIsBoundedForTest() const
+{
+    if (m_activeView == nullptr || !m_activeView->view->hasImage()) {
+        return false;
+    }
+    const auto* view = m_activeView->view;
+    const auto& window = view->lastReplacementWindowForTest();
+    const auto image = view->image().size();
+    const QRectF rasterBounds(0.0, 0.0,
+        static_cast<double>(image.width()),
+        static_cast<double>(image.height()));
+    return window.has_value() && !window->isEmpty()
+        && rasterBounds.contains(*window);
+}
+
 bool MainWindow::fabStateClearedForTest() const
 {
     return !m_fabMode && !m_multifabReturn && !m_fabSourceMetadata
@@ -311,6 +326,18 @@ void MainWindow::rubberBandZoomRectangularActiveViewForTest()
     const auto height = static_cast<double>(m_activeView->plane->height);
     rubberBandZoom(*m_activeView,
         QRectF(0.275 * width, 0.35 * height, 0.45 * width, 0.2 * height));
+}
+
+void MainWindow::rubberBandZoomTallActiveViewForTest()
+{
+    if (m_activeView == nullptr || m_activeView->plane->width <= 0
+        || m_activeView->plane->height <= 0) {
+        return;
+    }
+    const auto width = static_cast<double>(m_activeView->plane->width);
+    const auto height = static_cast<double>(m_activeView->plane->height);
+    rubberBandZoom(*m_activeView,
+        QRectF(0.3 * width, 0.275 * height, 0.4 * width, 0.45 * height));
 }
 
 bool MainWindow::allViewsRubberBandZoomedForTest()

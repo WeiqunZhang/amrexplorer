@@ -85,12 +85,15 @@ public:
     // dimensions change. Refit discards the transform even for equal-size
     // rasters whose data regions are incompatible. A placement keeps the
     // virtual canvas: the scene rect and view transform are left untouched so
-    // replacing the raster never moves the scroll position.
+    // replacing the raster never moves the scroll position. A finalWindow is
+    // applied to the replacement before the viewport can paint or report an
+    // intermediate layout, and leaves the view in Custom mode.
     void setImage(const QImage& image,
         ImageTransformPolicy transformPolicy =
             ImageTransformPolicy::GeometryAware,
         QSize logicalSize = {},
-        const std::optional<VirtualPlacement>& placement = std::nullopt);
+        const std::optional<VirtualPlacement>& placement = std::nullopt,
+        const std::optional<QRectF>& finalWindow = std::nullopt);
     // Enter or leave the virtual canvas for the raster already on display,
     // repositioning it without waiting for the next render.
     void setVirtualCanvas(const std::optional<VirtualPlacement>& placement);
@@ -101,6 +104,13 @@ public:
     // The raster item's footprint in scene coordinates (the image rect in the
     // classic raster-at-origin scene; the fetched cell window when virtual).
     [[nodiscard]] QRectF imageSceneRect() const;
+#ifdef AMREXPLORER_QT_TEST_ACCESS
+    [[nodiscard]] const std::optional<QRectF>&
+        lastReplacementWindowForTest() const noexcept
+    {
+        return m_lastReplacementWindow;
+    }
+#endif
     // The visible part of the raster in raster-pixel coordinates, clamped to
     // the raster. Scene coordinates are raster pixels only in the classic
     // scene; on a virtual canvas they are whole-domain finest cells and the
@@ -248,6 +258,11 @@ private:
     QGraphicsPixmapItem* m_item = nullptr;
     QImage m_image;
     QString m_placeholderText;
+#ifdef AMREXPLORER_QT_TEST_ACCESS
+    std::optional<QRectF> m_lastReplacementWindow;
+#endif
+    bool m_imageReplacementInProgress = false;
+    std::optional<QSize> m_deferredViewportSize;
     // Raster dimensions at local/native density. Remote Fit rasters may have
     // a different sampled size; fixed scales use this logical size so 1x
     // remains one native output pixel per screen pixel.

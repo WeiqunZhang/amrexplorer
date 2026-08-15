@@ -1468,6 +1468,44 @@ int main(int argc, char* argv[])
                     "127.0.0.1", server->port(), path, server->token());
             });
     } else if (argc == 3
+        && std::string_view(argv[1])
+            == "--remote-rubber-atomic-frame-smoke-test") {
+        smokeServer = std::make_shared<amrvis::remote::Server>();
+        smokeServerThread.emplace(
+            [server = smokeServer] { server->run(); });
+        QObject::connect(&window,
+            &amrvis::qt::MainWindow::initialSliceFinished,
+            &application, [&window, &application](bool success) {
+                if (!success) {
+                    application.exit(2);
+                    return;
+                }
+                QObject::connect(&window,
+                    &amrvis::qt::MainWindow::interactiveSlicesSettled,
+                    &application, [&window, &application] {
+                        const bool zoomed = window.activeViewIsZoomedForTest();
+                        const bool aspect = window.activeViewHasPhysicalAspectForTest(
+                            8.0 / 9.0);
+                        const bool bounded = window
+                            .activeViewReplacementWindowIsBoundedForTest();
+                        if (!zoomed || !aspect || !bounded) {
+                            std::cerr << "atomic rubber-band frame mismatch: "
+                                      << "zoomed=" << zoomed
+                                      << " aspect=" << aspect
+                                      << " bounded=" << bounded << '\n';
+                        }
+                        application.exit(zoomed && aspect && bounded ? 0 : 1);
+                    }, Qt::SingleShotConnection);
+                window.rubberBandZoomTallActiveViewForTest();
+            });
+        QTimer::singleShot(15000, &application,
+            [&application] { application.exit(1); });
+        QTimer::singleShot(0, &window,
+            [&window, path = std::string(argv[2]), server = smokeServer] {
+                window.openRemoteDataset(
+                    "127.0.0.1", server->port(), path, server->token());
+            });
+    } else if (argc == 3
         && std::string_view(argv[1]) == "--remote-grid-boxes-smoke-test") {
         smokeServer = std::make_shared<amrvis::remote::Server>();
         smokeServerThread.emplace(

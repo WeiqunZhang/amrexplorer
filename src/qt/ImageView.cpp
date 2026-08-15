@@ -113,8 +113,21 @@ ImageView::ImageView(QWidget* parent)
 
 void ImageView::setImage(
     const QImage& image, ImageTransformPolicy transformPolicy,
-    QSize logicalSize, const std::optional<VirtualPlacement>& placement)
+    QSize logicalSize, const std::optional<VirtualPlacement>& placement,
+    const std::optional<QRectF>& finalWindow)
 {
+#ifdef AMREXPLORER_QT_TEST_ACCESS
+    m_lastReplacementWindow = finalWindow;
+#endif
+    const bool atomicReframe = finalWindow.has_value()
+        && !finalWindow->isEmpty();
+    const bool updatesWereEnabled = updatesEnabled();
+    if (atomicReframe) {
+        m_imageReplacementInProgress = true;
+        if (updatesWereEnabled) {
+            setUpdatesEnabled(false);
+        }
+    }
     const bool sizeChanged = m_image.isNull() || m_image.size() != image.size();
     // An explicitly incompatible raster resets Custom mode. Fixed scale is a
     // user-selected persistent mode and therefore survives every replacement,
@@ -142,7 +155,10 @@ void ImageView::setImage(
     m_placement = placement;
     applyPlacement();
     setBackgroundBrush(viewportBackground());
-    if (m_transformMode == TransformMode::Fit) {
+    if (atomicReframe) {
+        m_transformMode = TransformMode::Custom;
+        fitInView(m_item->mapRectToScene(*finalWindow), Qt::KeepAspectRatio);
+    } else if (m_transformMode == TransformMode::Fit) {
         fitImage();
     } else if (m_transformMode == TransformMode::FixedScale) {
         applyFixedScale();
@@ -152,6 +168,17 @@ void ImageView::setImage(
         fitImage();
     }
     applyCrosshairs();
+    if (atomicReframe) {
+        m_imageReplacementInProgress = false;
+        if (updatesWereEnabled) {
+            setUpdatesEnabled(true);
+        }
+        if (m_deferredViewportSize) {
+            const auto size = *m_deferredViewportSize;
+            m_deferredViewportSize.reset();
+            emit viewportResized(size);
+        }
+    }
 }
 
 void ImageView::setVirtualCanvas(
@@ -813,6 +840,10 @@ void ImageView::resizeEvent(QResizeEvent* event)
     QGraphicsView::resizeEvent(event);
     if (m_transformMode == TransformMode::Fit) {
         fitImage();
+    }
+    if (m_imageReplacementInProgress) {
+        m_deferredViewportSize = viewport()->size();
+        return;
     }
     emit viewportResized(viewport()->size());
 }

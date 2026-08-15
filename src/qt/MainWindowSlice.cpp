@@ -746,7 +746,16 @@ std::optional<QRectF> MainWindow::preservedDataWindow(
     if (window.isEmpty()) {
         return std::nullopt;
     }
-    return window;
+    // Keep the re-frame inside the raster that arrived. A KeepAspectRatio
+    // feedback zoom can map the viewport past the requested region on its
+    // slack axis; including that padding would shrink the replacement raster
+    // inside the pane even though there are no pixels outside it to display.
+    const QRectF rasterBounds(0.0, 0.0,
+        static_cast<double>(incoming.width),
+        static_cast<double>(incoming.height));
+    const auto clamped = window.intersected(rasterBounds);
+    return clamped.isEmpty() ? std::nullopt
+                             : std::optional<QRectF>{clamped};
 }
 
 std::optional<QRectF> MainWindow::sphericalReframe(
@@ -793,8 +802,8 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display)
         // refitting to the whole sector (the GeometryAware size-change refit).
         if (const auto sphericalWindow = sphericalReframe(state, display)) {
             state.view->setImage(displayImageFor(display.image),
-                ImageTransformPolicy::Preserve);
-            state.view->zoomToRect(*sphericalWindow);
+                ImageTransformPolicy::Preserve, {}, std::nullopt,
+                sphericalWindow);
         } else {
             // Preserve/Refit/GeometryAware from the cached-vs-incoming request
             // pair; the rationale lives with the decision in the coordinator.
@@ -834,10 +843,7 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display)
             }
             state.view->setImage(image, transformPolicy,
                 logicalImageSize(state, display.slice.plane, image),
-                placement);
-            if (dataWindowInNewScene) {
-                state.view->zoomToRect(*dataWindowInNewScene);
-            }
+                placement, dataWindowInNewScene);
             state.rasterGeometry = incomingGeometry;
         }
     }

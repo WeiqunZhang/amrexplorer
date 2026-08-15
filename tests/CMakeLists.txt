@@ -562,6 +562,19 @@ if(TARGET amrexplorer_qt)
         TIMEOUT 30)
 
     add_test(
+        NAME qt_remote_rubber_atomic_frame_smoke
+        COMMAND "${CMAKE_COMMAND}" -E env
+            QT_QPA_PLATFORM=offscreen
+            "XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/xdg_remote_rubber_atomic"
+            "$<TARGET_FILE:amrexplorer_qt>"
+            --remote-rubber-atomic-frame-smoke-test
+            "${remote_server_fixture_dir}"
+    )
+    set_tests_properties(qt_remote_rubber_atomic_frame_smoke PROPERTIES
+        FIXTURES_REQUIRED remote_server_materialized
+        TIMEOUT 30)
+
+    add_test(
         NAME qt_remote_3d_initial_geometry_smoke
         COMMAND "${CMAKE_COMMAND}" -E env QT_QPA_PLATFORM=offscreen
             "$<TARGET_FILE:amrexplorer_qt>"
