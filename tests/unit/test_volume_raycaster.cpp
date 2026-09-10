@@ -409,10 +409,15 @@ int main()
                     5.0, amrvis::VolumeRange{-1.0, 10.0, true}, 253).has_value()
                 && !amrvis::transferEntryFor(
                     5.0, amrvis::VolumeRange{1.0, 1.0, false}, 253).has_value()
-                && !amrvis::transferEntryFor(
-                    5.0, amrvis::VolumeRange{-huge, huge, false}, 253).has_value()
                 && !amrvis::transferEntryFor(5.0, linear, 0).has_value(),
             "a range that can map nothing returned an entry");
+        const amrvis::VolumeRange wide{-huge, huge, false};
+        require(amrvis::transferEntryFor(-huge, wide, 253) == 0
+                && amrvis::transferEntryFor(-huge / 2.0, wide, 253) == 63
+                && amrvis::transferEntryFor(0.0, wide, 253) == 126
+                && amrvis::transferEntryFor(huge / 2.0, wide, 253) == 189
+                && amrvis::transferEntryFor(huge, wide, 253) == 252,
+            "an overflowing span did not preserve transfer-function slots");
         // The renderer honours a logarithmic range: value 10 in [1, 100]
         // takes the middle entry's colour.
         auto grid = uniformGrid(4, 10.0F);
@@ -425,6 +430,31 @@ int main()
         require(greenOf(pixelAt(frame, 16, 16)) == 255
                 && redOf(pixelAt(frame, 16, 16)) == 0,
             "the logarithmic range did not select the middle entry");
+    }
+
+    // Trilinear interpolation must preserve the picture when finite corners
+    // acquire a difference larger than DBL_MAX, in any of the three axes.
+    for (int axis = 0; axis < 3; ++axis) {
+        auto grid = uniformGrid(2, 0.0F);
+        for (std::size_t i = 0; i < grid.values.size(); ++i) {
+            grid.values[i] = ((i >> axis) & 1U) != 0 ? 1.0 : -1.0;
+        }
+        amrvis::VolumeTransferFunction transfer;
+        transfer.colors = {0xFF0000U, 0x00FF00U, 0x0000FFU};
+        transfer.opacities = {1.0F, 1.0F, 1.0F};
+        auto settings = settingsFor(amrvis::orthoPresetXY, 64, transfer);
+        settings.sampling = amrvis::SamplingPolicy::Linear;
+        settings.range = {-1.0, 1.0, false};
+        const auto reference = amrvis::raycastVolume(grid, settings);
+        for (const double magnitude : {1.0e308, std::numeric_limits<double>::max()}) {
+            auto scaled = grid;
+            for (auto& value : scaled.values) {
+                value *= magnitude;
+            }
+            settings.range = {-magnitude, magnitude, false};
+            require(amrvis::raycastVolume(scaled, settings).pixels == reference.pixels,
+                "extreme finite corners changed trilinear volume colors");
+        }
     }
 
     // --- NaN voxels are transparent ---------------------------------------
@@ -805,10 +835,10 @@ int main()
         auto bad = settingsFor(amrvis::orthoPresetXY, 32, twoEntries(0xFFU, 1.0F));
         bad.range = {1.0, 1.0, false};
         require(rejects(bad), "an empty range was accepted");
-        // An infinite span would map every value to the bottom entry.
+        // A finite range may span more than DBL_MAX; mapping scales it safely.
         bad.range = {-std::numeric_limits<double>::max(),
             std::numeric_limits<double>::max(), false};
-        require(rejects(bad), "a range with an infinite span was accepted");
+        require(!rejects(bad), "a finite range with an overflowing span was refused");
         bad = settingsFor(amrvis::orthoPresetXY, 0, twoEntries(0xFFU, 1.0F));
         require(rejects(bad), "a zero-size output was accepted");
         bad = settingsFor(amrvis::orthoPresetXY, 32, twoEntries(0xFFU, 1.0F));
