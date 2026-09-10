@@ -1,6 +1,104 @@
 #include "MainWindowInternal.hpp"
 
+#include <QElapsedTimer>
+#include <QTableView>
+#include <QTabWidget>
+
 namespace amrvis::qt {
+
+bool MainWindow::adaptivePrecisionForTest()
+{
+    constexpr double low = 1.25663706212e-6;
+    constexpr double high = 1.25663706213e-6;
+    applyNumberFormat("%g");
+    if (displayIsSpherical()) {
+        // Probe two R-Z pixels in a thin radial shell. Z must retain radial
+        // precision even though the theta range spans an ordinary [0, pi].
+        ImageView view;
+        QImage image(2, 2, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::black);
+        view.setImage(image);
+        auto plane = std::make_shared<ScalarPlane>();
+        plane->width = 2;
+        plane->height = 2;
+        plane->physicalRegion = RealBox{Real3{{1e6, 0.0, 0.0}},
+            Real3{{1e6 + 1.0, 3.141592653589793, 0.0}}};
+        plane->values.assign(4, 1.0);
+        plane->valid.assign(4, 1);
+        plane->sourceLevel.assign(4, 0);
+        PlaneViewState state;
+        state.view = &view;
+        state.normal = 2;
+        state.plane = std::move(plane);
+        state.sphericalDisplay = SphericalDisplay::RZ;
+        state.displayRegion = RealBox{Real3{{600000.0, 800000.0, 0.0}},
+            Real3{{600000.6, 800000.8, 0.0}}};
+        return probeReadout(state, 0, 0).startsWith("R=600000.15 Z=800000.6 ")
+            && probeReadout(state, 0, 1).startsWith("R=600000.15 Z=800000.2 ");
+    }
+    applyDisplayPrecision(0.0, 1.0);
+    showDatasetWindow();
+    if (m_datasetWindow == nullptr) {
+        return false;
+    }
+    auto* tabs = m_datasetWindow->findChild<QTabWidget*>();
+    QElapsedTimer timer;
+    timer.start();
+    while (tabs != nullptr && tabs->count() < 2 && timer.elapsed() < 5000) {
+        QApplication::processEvents();
+    }
+    if (tabs == nullptr || tabs->count() < 2) {
+        closeDatasetWindow();
+        return false;
+    }
+    tabs->setCurrentIndex(1);
+    QPointer<QTableView> table = tabs->currentWidget()->findChild<QTableView*>();
+    if (table == nullptr) {
+        closeDatasetWindow();
+        return false;
+    }
+    table->selectionModel()->select(table->model()->index(0, 0),
+        QItemSelectionModel::Select);
+    table->verticalScrollBar()->setValue(table->verticalScrollBar()->maximum());
+    const int scroll = table->verticalScrollBar()->value();
+    applyDisplayPrecision(low, high);
+    const bool datasetPreserved = table != nullptr && tabs->currentIndex() == 1
+        && table->selectionModel()->selectedIndexes().size() == 1
+        && table->verticalScrollBar()->value() == scroll;
+    closeDatasetWindow();
+    applyDisplayPrecision(0.0, 1.0);
+    LinePlotWindow child("adaptive precision");
+    child.resize(800, 480);
+    child.setNumberFormat(m_numberFormat);
+    LinePlotCurve curve;
+    curve.fieldName = "narrow";
+    curve.line.positions = {0.0, 1.0, 2.0};
+    curve.line.values = {low, (low + high) / 2.0, high};
+    curve.line.valid = {1, 1, 1};
+    child.addCurve(std::move(curve));
+    // Use the same live child pointer that range and format updates reach.
+    m_linePlotWindow = &child;
+    const auto before = child.grab().toImage();
+    applyDisplayPrecision(low, high);
+    applyDisplayPrecision(0.0, 1.0);
+    const bool rangePreserved = child.grab().toImage() == before;
+    applyNumberFormat("%.6g");
+    const bool explicitChanged = child.grab().toImage() != before;
+    applyNumberFormat("%g");
+    const bool defaultRestored = child.grab().toImage() == before;
+    m_linePlotWindow = nullptr;
+    applyDisplayPrecision(low, high);
+    const auto options = exportOptions(true, false, false);
+    ColorBarWidget exported;
+    exported.setNumberFormat(options.colorBarNumberFormat);
+    exported.setFieldRange("narrow", low, high);
+    const auto layout = makeExportLayout(QSize(600, 400), options, {}, &exported);
+    return datasetPreserved && rangePreserved && explicitChanged && defaultRestored
+        && formatDigits(layout.axisFormats[0]) == minimumDisplayDigits
+        && formatDigits(layout.axisFormats[1]) == minimumDisplayDigits
+        && formatDigits(exported.tickFormat()) == minimumDisplayDigits
+        && formatDigits(exported.effectiveFormat()) > minimumDisplayDigits;
+}
 
 void MainWindow::setInitialSliceLaunchedHookForTest(std::function<void()> hook)
 {

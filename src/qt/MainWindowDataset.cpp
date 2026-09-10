@@ -500,7 +500,10 @@ ExportOptions MainWindow::exportOptions(bool includeColorBar, bool includeAxes,
     options.transparentBackground = transparentBackground;
     options.font = QFont(QStringLiteral("Sans Serif"));
     options.font.setStyleHint(QFont::SansSerif);
+    // Each panel resolves its spatial axes and field values independently,
+    // then freezes their presentation with the first frame's layout.
     options.numberFormat = m_numberFormat;
+    options.colorBarNumberFormat = m_numberFormat;
     options.lengthUnit = m_lengthUnitId;
     return options;
 }
@@ -523,7 +526,8 @@ QImage MainWindow::composeExportFrame(const ImageView* view, const ExportOptions
                    options.lengthUnit);
     ColorBarWidget colorBar;
     colorBar.setPalette(&m_paletteController->palette());
-    colorBar.setNumberFormat(options.numberFormat);
+    colorBar.setNumberFormat(options.colorBarNumberFormat.isEmpty()
+        ? options.numberFormat : options.colorBarNumberFormat);
     colorBar.setLogarithmic(state->displayLogarithmic);
     colorBar.setFieldRange(state->fieldName +
                                (state->displayLogarithmic ? tr(" (log)") : QString()),

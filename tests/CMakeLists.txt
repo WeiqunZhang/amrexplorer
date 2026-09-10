@@ -677,6 +677,21 @@ if(TARGET amrexplorer_qt)
         COMMAND "${CMAKE_COMMAND}" -E env QT_QPA_PLATFORM=offscreen
             "$<TARGET_FILE:test_dataset_selected_cell>")
 
+    add_executable(test_dataset_column_width
+        unit/test_dataset_column_width.cpp
+        "${PROJECT_SOURCE_DIR}/src/qt/DatasetWindow.cpp"
+        "${PROJECT_SOURCE_DIR}/src/qt/NumberFormat.cpp")
+    set_target_properties(test_dataset_column_width PROPERTIES AUTOMOC ON)
+    target_include_directories(test_dataset_column_width
+        PRIVATE "${PROJECT_SOURCE_DIR}/src/qt")
+    target_link_libraries(test_dataset_column_width PRIVATE
+        amrexplorer::data amrexplorer::pipeline amrexplorer::warnings
+        Qt6::Concurrent Qt6::Test Qt6::Widgets)
+    add_test(NAME dataset_column_width
+        COMMAND "${CMAKE_COMMAND}" -E env QT_QPA_PLATFORM=offscreen
+            "$<TARGET_FILE:test_dataset_column_width>")
+    set_tests_properties(dataset_column_width PROPERTIES TIMEOUT 30)
+
     add_executable(test_palette_controller
         unit/test_palette_controller.cpp
         "${PROJECT_SOURCE_DIR}/src/qt/PaletteController.cpp"
@@ -796,6 +811,36 @@ if(TARGET amrexplorer_qt)
         COMMAND "${CMAKE_COMMAND}" -E env QT_QPA_PLATFORM=offscreen
             "$<TARGET_FILE:test_widget_image_export>")
     set_tests_properties(widget_image_export PROPERTIES TIMEOUT 60)
+
+    add_test(NAME qt_adaptive_precision
+        COMMAND "${CMAKE_COMMAND}"
+            "-DMATERIALIZER=$<TARGET_FILE:fixture_materializer>"
+            "-DAMREXPLORER_QT=$<TARGET_FILE:amrexplorer_qt>"
+            "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/data/plotfile_2d"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/fixtures_adaptive_precision"
+            -DMODE=adaptive-precision
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/qt_smoke_driver.cmake")
+    set_tests_properties(qt_adaptive_precision PROPERTIES TIMEOUT 30)
+
+    add_test(NAME qt_spherical_adaptive_precision
+        COMMAND "${CMAKE_COMMAND}"
+            "-DMATERIALIZER=$<TARGET_FILE:fixture_materializer>"
+            "-DAMREXPLORER_QT=$<TARGET_FILE:amrexplorer_qt>"
+            "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/data/plotfile_2d_spherical"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/fixtures_spherical_adaptive_precision"
+            -DMODE=adaptive-precision
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/qt_smoke_driver.cmake")
+    set_tests_properties(qt_spherical_adaptive_precision PROPERTIES TIMEOUT 30)
+
+    add_executable(test_color_bar_labels unit/test_color_bar_labels.cpp
+        "${PROJECT_SOURCE_DIR}/src/qt/ColorBarWidget.cpp"
+        "${PROJECT_SOURCE_DIR}/src/qt/NumberFormat.cpp")
+    target_include_directories(test_color_bar_labels
+        PRIVATE "${PROJECT_SOURCE_DIR}/src/qt")
+    target_link_libraries(test_color_bar_labels PRIVATE amrexplorer::render2d
+        amrexplorer::warnings Qt6::Widgets)
+    add_test(NAME color_bar_labels COMMAND "${CMAKE_COMMAND}" -E env
+        QT_QPA_PLATFORM=offscreen "$<TARGET_FILE:test_color_bar_labels>")
 
     add_executable(test_export_frame unit/test_export_frame.cpp
         "${PROJECT_SOURCE_DIR}/src/qt/ExportFrame.cpp"

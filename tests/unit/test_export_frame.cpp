@@ -1,8 +1,11 @@
 #include "ColorBarWidget.hpp"
 #include "ExportFrame.hpp"
+#include "NumberFormat.hpp"
+#include "RecordingPaintDevice.hpp"
 
 #include <QApplication>
 #include <QTemporaryDir>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -172,9 +175,13 @@ int main(int argc, char** argv) {
         const auto squareAxes = exportAxes(tallDomain, 3, 2, 0, SphericalDisplay::RZ, true, {});
         const auto square =
             makeExportLayout(QSize(540, 540), compactOptions, squareAxes, &compactBar, animation);
+        // Annotations wider than the data grow the canvas but not the font,
+        // so the reference width stops at twice the data's longer side.
+        const int dataLength = std::max(square.dataRect.width(), square.dataRect.height());
+        const int referenceWidth = std::min(square.canvasSize.width(), 2 * dataLength);
         require(square.font.pixelSize() ==
                     std::max(12, static_cast<int>(
-                                     std::lround(square.canvasSize.width() * 11.0 / (72.0 * 7.0)))),
+                                     std::lround(referenceWidth * 11.0 / (72.0 * 7.0)))),
                 "square XY export font sizing changed");
         for (int normal : {0, 1}) {
             const auto tallAxes =
@@ -191,9 +198,118 @@ int main(int argc, char** argv) {
     }
     const QFontMetrics movieMetrics(movie.font);
     for (const auto& label : {QStringLiteral("-9e-308"), QStringLiteral("-9e+308")}) {
-        require(movie.verticalLabelWidth >= movieMetrics.horizontalAdvance(label),
+    require(movie.verticalLabelWidth >= movieMetrics.horizontalAdvance(label),
                 "compact movie layout cannot fit scientific notation");
     }
+    // Spatial precision follows each displayed coordinate range, independently
+    // of the scalar field and of the other coordinate axis.
+    constexpr double narrowLow = 1.25663706212e-6;
+    constexpr double narrowHigh = 1.25663706213e-6;
+    ColorBarWidget adaptiveBar;
+    adaptiveBar.setFieldRange("field", narrowLow, narrowHigh);
+    const std::array<ExportAxis, 2> mixedAxes{{{"x", 0.133333333333333, 1.0},
+        {"y", narrowLow, narrowHigh}}};
+    const auto adaptive = makeExportLayout(raster.size(), compactOptions, mixedAxes,
+        &adaptiveBar);
+    require(adaptive.axisFormats[0] == "%.6g"
+            && formatDigits(adaptive.axisFormats[1]) > minimumDisplayDigits,
+        "export axes did not resolve precision independently");
+    require(exportNumber(0.133333333333333, adaptive.axisFormats[0],
+                QFontMetrics(adaptive.font), adaptive.labelWidth) == "0.133333",
+        "a narrow field or y range added noise digits to the x axis");
+    auto explicitOptions = compactOptions;
+    explicitOptions.numberFormat = "%.8g";
+    const auto explicitLayout = makeExportLayout(raster.size(), explicitOptions, mixedAxes);
+    require(explicitLayout.axisFormats[0] == "%.8g"
+            && explicitLayout.axisFormats[1] == "%.8g",
+        "export overrode explicitly requested axis precision");
+
+    // Freeze residual precision and the offset line's presence. Later frames
+    // span ordinary ranges and huge exponents but still print all six digits,
+    // inside the first frame's rectangle.
+    require(adaptive.colorBarPresentation.has_value(), "color bar notation was not frozen");
+    const auto& presentation = *adaptive.colorBarPresentation;
+    require(presentation.offsetLine && presentation.tickFormat == "%.6g",
+        "first-frame residuals inherited full-value precision");
+    for (double magnitude : {1.23456789, 1.23456789e-200, 1.23456789e200}) {
+        adaptiveBar.setFieldRange("field", -magnitude, magnitude);
+        RecordingPaintDevice device(adaptive.canvasSize.width(), adaptive.canvasSize.height());
+        QPainter painter(&device);
+        painter.setFont(adaptive.font);
+        adaptiveBar.paintBar(&painter, adaptive.colorBarRect, true, true, &presentation);
+        painter.end();
+        require(device.text().size() >= 4, "a frozen color bar lost its offset or tick labels");
+        const auto tickCount = device.text().size() - 2;
+        require(device.text()[1].value == "+0",
+            "an ordinary frame lost its reserved offset line");
+        for (std::size_t tick = 0; tick < tickCount; ++tick) {
+            const double value = std::lerp(magnitude, -magnitude,
+                static_cast<double>(tick) / static_cast<double>(tickCount - 1));
+            require(device.text()[tick + 2].value == QString::number(value, 'g', 6),
+                "animation narrowed ticks below its frozen precision");
+            require(QRectF(adaptive.colorBarRect).adjusted(-1, -1, 1, 1)
+                    .contains(device.text()[tick + 2].bounds),
+                "animation tick text escaped its frozen color bar");
+        }
+        QImage expected(adaptive.canvasSize, QImage::Format_ARGB32_Premultiplied);
+        expected.fill(Qt::transparent);
+        QPainter expectedPainter(&expected);
+        expectedPainter.setFont(adaptive.font);
+        adaptiveBar.paintBar(&expectedPainter, adaptive.colorBarRect, true, true, &presentation);
+        expectedPainter.end();
+        auto transparentOptions = compactOptions;
+        transparentOptions.transparentBackground = true;
+        const auto frame = composeExportImage(raster, mixedAxes, transparentOptions,
+            adaptive, &adaptiveBar);
+        require(frame.copy(adaptive.colorBarRect) == expected.copy(adaptive.colorBarRect),
+            "frame composition did not use its frozen color bar presentation");
+    }
+    // A rounded offset can lie just above a later narrow range and become
+    // unusable. Keep the reserved line, but print full values with enough
+    // digits to distinguish the ticks instead of using residual precision.
+    adaptiveBar.setFieldRange("field", narrowLow, narrowHigh);
+    const auto narrowMovie = makeExportLayout(raster.size(), compactOptions,
+        mixedAxes, &adaptiveBar, true);
+    constexpr double laterLow = 1.3839999999999999e-11;
+    constexpr double laterHigh = 1.3840000000138398e-11;
+    adaptiveBar.setFieldRange("field", laterLow, laterHigh);
+    require(adaptiveBar.labelOffset() == 0.0,
+        "the later range no longer exercises an unusable offset");
+    RecordingPaintDevice laterDevice(narrowMovie.canvasSize.width(), narrowMovie.canvasSize.height());
+    QPainter laterPainter(&laterDevice);
+    laterPainter.setFont(narrowMovie.font);
+    adaptiveBar.paintBar(&laterPainter, narrowMovie.colorBarRect, true, true,
+        &*narrowMovie.colorBarPresentation);
+    laterPainter.end();
+    require(laterDevice.text().size() >= 4 && laterDevice.text()[1].value == "+0",
+        "a narrow animation frame lost its reserved offset line or ticks");
+    const auto& valueFormat = narrowMovie.colorBarPresentation->valueFormat;
+    const auto laterTickCount = laterDevice.text().size() - 2;
+    for (std::size_t tick = 0; tick < laterTickCount; ++tick) {
+        const auto value = ColorBarWidget::tickValue(laterLow, laterHigh, false,
+            static_cast<double>(tick) / static_cast<double>(laterTickCount - 1));
+        const auto& label = laterDevice.text()[tick + 2];
+        require(label.value == formatNumber(value, valueFormat),
+            "a narrow animation frame without an offset lost full-value precision");
+        require(tick == 0 || label.value != laterDevice.text()[tick + 1].value,
+            "a narrow animation frame has identical adjacent tick labels");
+        require(QRectF(narrowMovie.colorBarRect).adjusted(-1, -1, 1, 1).contains(label.bounds),
+            "a full-value animation tick escaped its frozen color bar");
+    }
+
+    // An ordinary first frame must not acquire an offset line later.
+    adaptiveBar.setFieldRange("field", 0.0, 1.0);
+    const auto ordinary = makeExportLayout(raster.size(), compactOptions, xy, &adaptiveBar);
+    adaptiveBar.setFieldRange("field", narrowLow, narrowHigh);
+    RecordingPaintDevice ordinaryDevice(ordinary.canvasSize.width(), ordinary.canvasSize.height());
+    QPainter ordinaryPainter(&ordinaryDevice);
+    ordinaryPainter.setFont(ordinary.font);
+    adaptiveBar.paintBar(&ordinaryPainter, ordinary.colorBarRect, true, true,
+        &*ordinary.colorBarPresentation);
+    ordinaryPainter.end();
+    require(ordinaryDevice.text().size() == 9,
+        "a later narrow range added an offset line to an ordinary movie");
+
     const auto ticks = exportTicks({"y", -2.0, 2.0}, 400, 40, "%g", fm, layout.labelWidth);
     require(ticks.size() >= 3 && ticks.front().fraction == 0.0 && ticks.back().fraction == 1.0,
             "axis endpoints do not map bottom-to-top");
@@ -206,6 +322,54 @@ int main(int argc, char** argv) {
                     "a tick has an invalid position");
         }
     }
+    // Fixed/exponential notation must retain ticks when compact notation is
+    // needed, and enormous precision fields must not inflate the layout.
+    for (const auto& format : {QString("%.2f"), QString("%.6e"),
+             QString("%.2000g"), QString("%.99999999999g")}) {
+        auto fixedOptions = options;
+        fixedOptions.numberFormat = format;
+        const std::array<ExportAxis, 2> largeAxes{{{"x", 12345678.9, 22345678.9},
+            {"y", -1e200, 1e200}}};
+        const auto fixed = makeExportLayout(QSize(600, 400), fixedOptions, largeAxes);
+        require(fixed.canvasSize.width() < 4096 && fixed.font.pixelSize() < 128,
+            "an oversized precision made the export layout unbounded");
+        const QFontMetrics fixedMetrics(fixed.font);
+        for (const auto& axis : largeAxes) {
+            const auto labels = exportTicks(axis, 400, 100, format, fixedMetrics,
+                fixed.labelWidth);
+            require(!labels.empty(), "fixed/exponential format erased the export ticks");
+            for (const auto& label : labels) {
+                require(fixedMetrics.horizontalAdvance(label.label) <= fixed.labelWidth,
+                    "an exported tick overflowed the frozen label budget");
+            }
+        }
+    }
+
+    // Font-dependent label widths must not feed back into ever-larger fonts.
+    // DejaVu Sans reproduces the Linux CI failure; stretching also exercises
+    // wide glyphs on systems where that family is unavailable.
+    for (const auto& family : {QString("Sans Serif"), QString("DejaVu Sans")}) {
+        for (const int stretch : {100, 150}) {
+            auto wideOptions = options;
+            wideOptions.font = QFont(family);
+            wideOptions.font.setStretch(stretch);
+            for (const auto& format : {QString("%g"), QString("%.17g"),
+                     QString("%.2000g")}) {
+                wideOptions.numberFormat = format;
+                const std::array<ExportAxis, 2> narrowAxes{{{"x", narrowLow, narrowHigh},
+                    {"y", narrowLow, narrowHigh}}};
+                const auto wide = makeExportLayout(QSize(600, 400), wideOptions,
+                    narrowAxes, &adaptiveBar, true);
+                require(wide.font.pixelSize() < 40 && wide.canvasSize.width() < 4096,
+                    "wide high-precision labels inflated the export font or canvas");
+                require(wide.dataRect.size() == QSize(600, 400),
+                    "bounding annotation size changed the exported data dimensions");
+                require(formatDigits(wide.axisFormats[0]) >= 15,
+                    "bounding annotation size discarded the requested axis precision");
+            }
+        }
+    }
+
     const auto savedPalette = app.palette();
     QPalette hostile;
     hostile.setColor(QPalette::Window, Qt::black);
