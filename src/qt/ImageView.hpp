@@ -270,6 +270,10 @@ public:
     void zoomToRect(const QRectF& imageRect, bool confineScene = false);
     // The same in scene coordinates, for a selection spanning several tiles.
     void zoomToSceneRect(const QRectF& sceneRect, bool confineScene = false);
+    // Confines the scene to `sceneRect` and centres the view on it without
+    // touching the transform or its mode: a pan of a zoomed pair, whose
+    // window keeps its size and whose scale -- fixed or not -- must stay.
+    void showSceneWindow(const QRectF& sceneRect);
     // Scrolls the viewport for Shift+left-drag and the arrow keys. The delta
     // is how far the content moves, matching the sense MainWindow's
     // shiftedPanRegion uses, and is a no-op when the scene already fits the
@@ -393,6 +397,11 @@ private:
     // Union of the visible tiles' footprints; the scene rect when no canvas is
     // set, and what Fit and export frame.
     [[nodiscard]] QRectF tilesRect() const;
+    // What an export renders: the visible tiles' footprint, cut to a pair
+    // canvas confined by a zoom (the other layer's whole tile lies outside
+    // the framed window then). A virtual canvas is not a cut: the tile sits
+    // at its cell offset and the export follows it.
+    [[nodiscard]] QRectF exportSceneRect() const;
     void updateSceneRect();
     void fitImage();
     // Fit a scene rect into the viewport with the current stretch: the

@@ -181,23 +181,23 @@ void physicalLayoutStretchesEachLayerOnItsOwn()
 {
     const auto geometry = *amrvis::qt::pairGeometry(erf(), remora()).geometry;
     const std::array<double, 3> unit{1.0, 1.0, 1.0};
-    // Physical size: the tightest pixel is a 7.5 m REMORA row, so that is the
-    // unit; ERF rows are 25 units tall and a 1000 m column 133.3 wide.
+    // Physical size: the primary sets the unit, as it does alone -- its
+    // tightest pixel is a 187.5 m ERF row -- so opening the ocean beside it
+    // changes nothing about 1x. ERF is 48 rows tall and 70000 / 187.5 wide;
+    // the ocean's 7.5 m rows fall to 0.04 units each, 1.6 for all forty.
     const amrvis::qt::PairLayout physical(geometry, 1,
         amrvis::qt::AspectMode::PhysicalSize, unit, {1.0, 1.0});
-    // Normalized to the tightest pixel: a REMORA row is one unit, so ERF's
-    // 48 rows span 1200 and its 70 columns 70000 / 7.5.
-    require(nearly(physical.tileRect(0), {0.0, 0.0, 70000.0 / 7.5, 1200.0})
-            && nearly(physical.tileRect(1), {20000.0 / 7.5, 1200.0, 50000.0 / 7.5, 40.0}),
-        "the physical tiles are not in proportion");
+    require(nearly(physical.tileRect(0), {0.0, 0.0, 70000.0 / 187.5, 48.0})
+            && nearly(physical.tileRect(1),
+                {20000.0 / 187.5, 48.0, 50000.0 / 187.5, 300.0 / 187.5}),
+        "the physical tiles are not in the primary's units");
 
-    // Stretching the ocean tenfold makes its rows the tight axis no longer:
-    // a 75 m REMORA row is now the unit and the air shrinks accordingly.
+    // The ocean's own factor is what brings it out: thirty times taller it
+    // is 48 units, as tall as the air, whose tile does not move.
     const amrvis::qt::PairLayout deepOcean(geometry, 1,
-        amrvis::qt::AspectMode::PhysicalSize, unit, {1.0, 10.0});
-    require(nearly(deepOcean.tileRect(1).height, 40.0)
-            && nearly(deepOcean.tileRect(0).height, 120.0)
-            && nearly(deepOcean.tileRect(0).width, 70000.0 / 75.0),
+        amrvis::qt::AspectMode::PhysicalSize, unit, {1.0, 30.0});
+    require(nearly(deepOcean.tileRect(1).height, 48.0)
+            && nearly(deepOcean.tileRect(0), {0.0, 0.0, 70000.0 / 187.5, 48.0}),
         "a companion perpendicular factor did not rescale only the ocean band");
     // A shared-axis factor widens both tiles alike.
     const amrvis::qt::PairLayout wide(geometry, 1, amrvis::qt::AspectMode::CellCounts,
@@ -205,6 +205,61 @@ void physicalLayoutStretchesEachLayerOnItsOwn()
     require(nearly(wide.tileRect(0), {0.0, 0.0, 140.0, 48.0})
             && nearly(wide.tileRect(1), {40.0, 48.0, 100.0, 40.0}),
         "an x factor did not widen both tiles");
+}
+
+bool nearly(const amrvis::RealBox& actual, const amrvis::RealBox& expected)
+{
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        if (!nearly(actual.lower[axis], expected.lower[axis])
+            || !nearly(actual.upper[axis], expected.upper[axis])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void inverseMapsRecoverPhysicalRegions()
+{
+    const auto geometry = *amrvis::qt::pairGeometry(erf(), remora()).geometry;
+    const std::array<double, 3> unit{1.0, 1.0, 1.0};
+    const amrvis::qt::PairLayout xz(geometry, 1, amrvis::qt::AspectMode::CellCounts,
+        unit, {1.0, 1.0});
+    const amrvis::qt::PairLayout xy(geometry, 2, amrvis::qt::AspectMode::CellCounts,
+        unit, {1.0, 1.0});
+    // Round trips through both bands and both kinds of axis.
+    require(nearly(xz.physicalFromScene(0, 0, xz.sceneFromPhysical(0, 0, 10000.0)), 10000.0)
+            && nearly(xz.physicalFromScene(1, 2, xz.sceneFromPhysical(1, 2, -90.0)), -90.0)
+            && nearly(xz.physicalFromScene(0, 2, xz.sceneFromPhysical(0, 2, 1500.0)), 1500.0)
+            && nearly(xy.physicalFromScene(1, 1, xy.sceneFromPhysical(1, 1, 15000.0)), 15000.0),
+        "physicalFromScene does not invert sceneFromPhysical");
+    // A whole tile is the layer's domain.
+    require(nearly(*xz.regionForSceneRect(0, xz.tileRect(0)), geometry.bounds[0])
+            && nearly(*xz.regionForSceneRect(1, xz.tileRect(1)), geometry.bounds[1])
+            && nearly(*xy.regionForSceneRect(1, xy.tileRect(1)), geometry.bounds[1]),
+        "a tile's rect does not map back to its domain");
+    // A rect straddling the interface: 8 atmosphere rows above it and 12
+    // ocean rows below, 20 columns wide, each layer getting its own part.
+    const auto straddle = xz.regionForSceneRect(0, {30.0, 40.0, 20.0, 20.0});
+    const auto straddleOcean = xz.regionForSceneRect(1, {30.0, 40.0, 20.0, 20.0});
+    require(straddle && straddleOcean
+            && nearly(*straddle,
+                {{{10000.0, 0.0, 0.0}}, {{30000.0, 20000.0, 8.0 * 187.5}}})
+            && nearly(*straddleOcean, {{{10000.0, 0.0, -90.0}}, {{30000.0, 20000.0, 0.0}}}),
+        "a straddling rect is not split at the interface");
+    // Entirely in the atmosphere's band: the ocean is missed; ending at the
+    // interface: the ocean is met within tolerance only, so missed too.
+    require(!xz.regionForSceneRect(1, {0.0, 0.0, 70.0, 10.0})
+            && !xz.regionForSceneRect(1, {0.0, 40.0, 70.0, 8.0})
+            && xz.regionForSceneRect(0, {0.0, 40.0, 70.0, 8.0}),
+        "a rect outside a band was not reported as missing it");
+    // West of the ocean's domain the ocean's part is cut to its own x range.
+    const auto west = xz.regionForSceneRect(1, {0.0, 48.0, 30.0, 40.0});
+    require(west && nearly(west->lower[0], 0.0) && nearly(west->upper[0], 10000.0)
+            && nearly(west->lower[2], -300.0) && nearly(west->upper[2], 0.0),
+        "a rect past the ocean's edge was not cut to its domain");
+    // Back through the forward map, the ocean's part lands where it was cut.
+    require(nearly(xz.sceneRectForRegion(1, *west), {20.0, 48.0, 10.0, 40.0}),
+        "the cut region does not map back onto the tile");
 }
 
 void displayMapStacksTheWholeDomains()
@@ -234,5 +289,6 @@ int main()
     indicesSpanBothLayers();
     cellCountsLayoutStacksRasters();
     physicalLayoutStretchesEachLayerOnItsOwn();
+    inverseMapsRecoverPhysicalRegions();
     return 0;
 }

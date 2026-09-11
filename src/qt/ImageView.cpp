@@ -282,6 +282,18 @@ QRectF ImageView::tilesRect() const
     return union_;
 }
 
+QRectF ImageView::exportSceneRect() const
+{
+    const auto tiles = tilesRect();
+    if (m_canvasRect.has_value() && !m_placement.has_value()) {
+        // A framed window with no tile under it (the layer on show lies
+        // elsewhere) exports as the empty window, not as the tile outside it.
+        const auto cut = tiles.intersected(*m_canvasRect);
+        return cut.isEmpty() ? *m_canvasRect : cut;
+    }
+    return tiles;
+}
+
 void ImageView::updateSceneRect()
 {
     m_scene->setSceneRect(m_canvasRect.value_or(tilesRect()));
@@ -982,8 +994,9 @@ QImage ImageView::composedImage(QSize outputSize, const QFont* exportFont,
         }
     }
     // The tiles' scene footprint, not the image rect: on a virtual canvas
-    // the item sits at its cell offset, and the export must follow it.
-    const auto source = tilesRect();
+    // the item sits at its cell offset, and the export must follow it; over
+    // a zoomed pair only the framed window is exported.
+    const auto source = exportSceneRect();
     m_scene->render(&painter, QRectF(0.0, 0.0, outWidth, outHeight), source,
                     Qt::IgnoreAspectRatio);
     for (const auto& tile : m_tiles) {
@@ -1056,6 +1069,15 @@ void ImageView::zoomToSceneRect(const QRectF& sceneTarget, bool confineScene)
         m_scene->setSceneRect(sceneTarget);
     }
     fitSceneRect(sceneTarget);
+}
+
+void ImageView::showSceneWindow(const QRectF& sceneRect)
+{
+    if (!hasImage() || sceneRect.isEmpty()) {
+        return;
+    }
+    m_scene->setSceneRect(sceneRect);
+    centerOn(sceneRect.center());
 }
 
 void ImageView::panViewport(const QPoint& delta)
@@ -1535,7 +1557,7 @@ QSizeF ImageView::displaySize() const
             tile0.image.height() * m_stretch.y()};
     }
     // Several tiles: their footprint is already in display units.
-    const auto footprint = tilesRect();
+    const auto footprint = exportSceneRect();
     return {footprint.width() * m_stretch.x(), footprint.height() * m_stretch.y()};
 }
 

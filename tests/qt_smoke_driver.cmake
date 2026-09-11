@@ -24,7 +24,10 @@
 #                 sequence-equal-size-transform-preserve |
 #                 sequence-geometry-refit | sequence-noop | sequence-failure |
 #                 remote-canvas-wheel | remote-cell-aspect |
-#                 physical-aspect | remote-physical-aspect | companion |
+#                 physical-aspect | physical-fixed-scale |
+#                 remote-physical-aspect | companion |
+#                 remote-companion | companion-derived | companion-zoom |
+#                 mixed-companion |
 #                 volume |
 #                 derived-field | derived-field-sequence |
 #                 derived-field-frames | derived-field-playback |
@@ -44,10 +47,14 @@ set(ENV{QT_QPA_PLATFORM} offscreen)
 
 # Isolate QSettings per run: a fresh, empty config directory makes every smoke
 # test start from defaults, so persisted UI state (spherical display mode and
-# supersample factor, palette, log scale, ...) never leaks between runs or from
-# the developer's own config and skews an assertion.
+# supersample factor, palette, aspect mode, ...) never leaks between runs or
+# from the developer's own config and skews an assertion. XDG_CONFIG_HOME
+# does that on Linux alone; AMREXPLORER_SETTINGS_DIR makes the test binary
+# store its QSettings there on every platform (the registry and macOS
+# preferences ignore XDG).
 file(REMOVE_RECURSE "${WORK}/config")
 set(ENV{XDG_CONFIG_HOME} "${WORK}/config")
+set(ENV{AMREXPLORER_SETTINGS_DIR} "${WORK}/config")
 
 macro(run_or_die)
     execute_process(COMMAND ${ARGN}
@@ -226,6 +233,9 @@ elseif(MODE STREQUAL "remote-cell-aspect")
 elseif(MODE STREQUAL "physical-aspect")
     run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt")
     run_or_die("${AMREXPLORER_QT}" --physical-aspect-smoke-test "${WORK}/plt")
+elseif(MODE STREQUAL "physical-fixed-scale")
+    run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt")
+    run_or_die("${AMREXPLORER_QT}" --physical-fixed-scale-smoke-test "${WORK}/plt")
 elseif(MODE STREQUAL "remote-physical-aspect")
     run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt")
     run_or_die("${AMREXPLORER_QT}" --remote-physical-aspect-smoke-test
@@ -238,6 +248,27 @@ elseif(MODE STREQUAL "companion")
     # it; its name must still be the directory's.
     run_or_die("${AMREXPLORER_QT}" --companion-smoke-test
         "${WORK}/upper" "${WORK}/lower/")
+elseif(MODE STREQUAL "remote-companion")
+    # The same pair, both served by the in-process loopback server.
+    run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/upper")
+    run_or_die("${MATERIALIZER}" "${SOURCE2}" "${WORK}/lower")
+    run_or_die("${AMREXPLORER_QT}" --remote-companion-smoke-test
+        "${WORK}/upper" "${WORK}/lower")
+elseif(MODE STREQUAL "companion-derived")
+    run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/upper")
+    run_or_die("${MATERIALIZER}" "${SOURCE2}" "${WORK}/lower")
+    run_or_die("${AMREXPLORER_QT}" --companion-derived-smoke-test
+        "${WORK}/upper" "${WORK}/lower")
+elseif(MODE STREQUAL "companion-zoom")
+    run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/upper")
+    run_or_die("${MATERIALIZER}" "${SOURCE2}" "${WORK}/lower")
+    run_or_die("${AMREXPLORER_QT}" --companion-zoom-smoke-test
+        "${WORK}/upper" "${WORK}/lower")
+elseif(MODE STREQUAL "mixed-companion")
+    run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/upper")
+    run_or_die("${MATERIALIZER}" "${SOURCE2}" "${WORK}/lower")
+    run_or_die("${AMREXPLORER_QT}" --mixed-companion-smoke-test
+        "${WORK}/upper" "${WORK}/lower")
 elseif(MODE STREQUAL "remote-canvas-wheel")
     run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt")
     run_or_die("${AMREXPLORER_QT}" --remote-canvas-wheel-smoke-test

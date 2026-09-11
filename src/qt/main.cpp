@@ -19,6 +19,7 @@
 #include <QLoggingCategory>
 #include <QMessageBox>
 #include <QProcess>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QTimer>
@@ -40,12 +41,13 @@ void printUsage(std::FILE* output)
 {
     std::fprintf(output,
         "usage: amrexplorer [PLOTFILE...] [--companion PLOTFILE]\n"
-        "       amrexplorer --ssh SSH_DESTINATION [--server PATH] [--] "
-        "[REMOTE_PLOTFILE...]\n\n"
+        "       amrexplorer --ssh SSH_DESTINATION [--server PATH] "
+        "[--companion REMOTE_PLOTFILE] [--] [REMOTE_PLOTFILE...]\n\n"
         "Open one plotfile directory, or several to play them as a\n"
         "sequence, or none for an empty window.\n\n"
         "  --companion PLOTFILE   show a second 3-D plotfile beside the first;\n"
-        "                         the two must share a plane\n"
+        "                         the two must share a plane (after --ssh, a\n"
+        "                         plotfile on the same server)\n"
         "  --ssh SSH_DESTINATION  run amrexplorer-server on the destination\n"
         "                         through ssh and open the remote plotfile\n"
         "                         paths there; with no paths, only establish\n"
@@ -421,6 +423,18 @@ int main(int argc, char* argv[])
     icon.addFile(QStringLiteral(":/amrexplorer-256.png"));
     application.setWindowIcon(icon);
     ensureDesktopEntry();
+#ifdef AMREXPLORER_QT_TEST_ACCESS
+    // The smoke drivers give each run its own settings directory so persisted
+    // UI state (aspect mode, palette, ...) never leaks between tests running
+    // side by side. XDG_CONFIG_HOME covers Linux only; the registry and
+    // CFPreferences ignore it, so an INI store under this directory is used
+    // on every platform.
+    const auto settingsDir = qEnvironmentVariable("AMREXPLORER_SETTINGS_DIR");
+    if (!settingsDir.isEmpty()) {
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir);
+    }
+#endif
     amrvis::qt::MainWindow window;
     window.show();
     // The smoke-test harnesses (SmokeHarness*.cpp) claim their options first;
@@ -452,10 +466,13 @@ int main(int argc, char* argv[])
             qCritical("%s", parsed.error.c_str());
             return 2;
         }
+        // A companion after --ssh is a plotfile on the same server, opened
+        // beside the one path once its slices are up; the window ties it to
+        // that load, so a startup that fails leaves nothing waiting.
         QTimer::singleShot(0, &window,
             [&window, request = std::move(*parsed.request)] {
                 window.startSshRemoteSession(request.destination,
-                    request.serverExecutable, request.paths);
+                    request.serverExecutable, request.paths, request.companion);
             });
     } else if (argc >= 2 && !std::string_view(argv[1]).starts_with("-")) {
         // One or more plotfile paths: a single path opens a dataset, two or

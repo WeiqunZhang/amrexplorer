@@ -37,7 +37,8 @@ You can also start without a path and use the File menu:
 - **Open MultiFab...** opens a standalone MultiFab header.
 - **Open Companion Plotfile...** shows a second 3-D plotfile in the same
   window beside the open one, when the two share a plane -- see
-  [Companion plotfiles](#companion-plotfiles). **Close Companion** removes it.
+  [Companion plotfiles](#companion-plotfiles); **Open Remote Companion
+  Plotfile...** takes one from a server. **Close Companion** removes it.
 - **Open New Window** creates an independent viewer for side-by-side
   comparison.
 - **Close Window** (Ctrl+W, Cmd+W on macOS) closes only the current window;
@@ -277,8 +278,9 @@ the Scale button then reports what it applied, such as `32x→16x`. Rubber-band
 zoom is unaffected: selecting a subregion re-reads that region at finest
 resolution. When the display is stretched (see
 [Aspect ratio and axis scaling](#aspect-ratio-and-axis-scaling)), the factor
-applies along the less stretched axis and the other axis gets more pixels per
-cell.
+applies along the dataset's tightest axis and the others get more pixels per
+cell, the same number on every panel: in Physical Size a fixed scale shows x
+as wide on the XY panel as on the XZ panel beside it.
 
 The line-plot window can accumulate curves, which is useful when comparing
 variables, levels, or positions. Its horizontal axis uses physical coordinates
@@ -377,6 +379,14 @@ the same window. The two domains must touch along exactly one axis and
 overlap along the other two; anything else is refused with a message and the
 open dataset stays as it was.
 
+The companion may be local or remote whatever the open plotfile is. **File >
+Open Companion Plotfile...** browses this machine; **File > Open Remote
+Companion Plotfile...** a server: the one the open plotfile came from when it
+is remote (the dialog keeps that session), else any server, over the window's
+remote session, started from the dialog if there is none. The command line
+form is `amrexplorer --ssh host /data/atmosphere_plt --companion
+/data/ocean_plt`. Plotfiles on two different servers cannot be paired.
+
 In the two panels that show the perpendicular axis, both datasets are drawn
 stacked at their physical positions and aligned along the shared axis, each
 at one raster sample per finest cell. The panel normal to the shared plane
@@ -394,18 +404,27 @@ both. Velocity vectors are drawn on the primary only. Probing, right-click
 slice moves, and line plots work on whichever dataset is under the pointer.
 **View > Aspect Ratio > Axis Scaling...** offers one factor per dataset along
 the perpendicular axis, so a shallow ocean can be stretched under a tall
-atmosphere, and one factor for each shared axis. Rubber-band and wheel zoom,
-panning, and the fixed scales act on the view; the rasters stay at their
-native resolution.
+atmosphere, and one factor for each shared axis. A rubber-band selection,
+which may straddle the interface, re-slices each dataset for the part inside
+its own domain and frames the selection; Shift-drag and the arrow keys move
+that window and refresh both; **Sync Rubber-band Zoom** carries the selection's
+extents to the other panels along the axes they share. Wheel zoom and the
+fixed scales act on the view alone. A fixed scale means what it means for the
+open plotfile by itself: in Physical Size its tightest cell is one pixel at
+1x, and a companion with finer cells shows them smaller than a pixel until its
+own factor in **Axis Scaling...** stretches them.
+
+The Expression Editor's definitions reach the companion too, computed
+against its own stored fields: its **Field** list shows the ones it resolves,
+and greys the rest with the reason. Applying a change reloads both datasets,
+and the companion keeps its selected field by name.
 
 While a companion is open the Dataset Metadata panel lists both plotfiles,
 the isometric view outlines both domains in the panels' proportions (so a
 shallow ocean under a tall atmosphere stays visible), and image export composes the
 stacked panels without axes (their two vertical scales differ). Volume
-rendering, particles, the Dataset window, sequences, remote datasets, the
-scale bar, synchronized rubber-band zoom, and derived fields for the
-companion are not available in this mode. Opening any other dataset closes
-the companion.
+rendering, particles, the Dataset window, sequences, and the scale bar are
+not available in this mode. Opening any other dataset closes the companion.
 
 ## Volume rendering
 

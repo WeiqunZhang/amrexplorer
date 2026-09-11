@@ -212,9 +212,9 @@ struct PairGeometryResult {
 // units: a fixed scale N is N screen pixels per scene unit. Along a shared
 // axis both layers use one linear map anchored at the union's lower bound;
 // along the perpendicular axis each layer has its own band, the upper layer's
-// first (top, or left), and its own scale. The whole panel is normalized so
-// the tightest raster pixel of either layer is one scene unit, the same rule
-// displayStretchFor applies to a single dataset. The layout depends only on
+// first (top, or left), and its own scale. The panels are normalized so the
+// primary's tightest raster pixel along any axis is one scene unit, the same
+// rule displayStretchFor applies to the primary alone. The layout depends only on
 // the geometry and the aspect settings, never on the current zoom, so pan and
 // zoom never move a tile.
 class PairLayout {
@@ -247,16 +247,18 @@ public:
                 * (physical ? 1.0 : 1.0 / geometry.finestCellSize[layer][p]);
         }
         // Normalize: the smallest scene-units-per-raster-pixel over the
-        // displayed axes of both layers becomes one.
+        // primary's three axes becomes one, so a fixed scale shows an axis at
+        // the same size on every panel (see displayStretchFor) and means
+        // what it meant with the primary alone. The companion is drawn in
+        // the same units: finer cells of its own fall below a scene unit,
+        // which its perpendicular factor is there to stretch.
         double smallest = std::numeric_limits<double>::infinity();
-        for (const auto axis : m_axes) {
+        for (int axis = 0; axis < 3; ++axis) {
             const auto a = static_cast<std::size_t>(axis);
-            for (std::size_t layer = 0; layer < 2; ++layer) {
-                const auto perPixel = axis == geometry.perpendicularAxis
-                    ? m_perpendicularUnitsPerLength[layer] * geometry.finestCellSize[layer][a]
-                    : m_sharedUnitsPerLength[a] * geometry.finestCellSize[layer][a];
-                smallest = std::min(smallest, perPixel);
-            }
+            const auto perPixel = axis == geometry.perpendicularAxis
+                ? m_perpendicularUnitsPerLength[0] * geometry.finestCellSize[0][a]
+                : m_sharedUnitsPerLength[a] * geometry.finestCellSize[0][a];
+            smallest = std::min(smallest, perPixel);
         }
         if (std::isfinite(smallest) && smallest > 0.0) {
             for (auto& value : m_sharedUnitsPerLength.values) {
@@ -309,6 +311,57 @@ public:
         const auto k = m_sharedUnitsPerLength[a];
         return vertical ? (union_.upper[a] - position) * k
                         : (position - union_.lower[a]) * k;
+    }
+
+    // The physical position under a scene coordinate along a displayed axis:
+    // sceneFromPhysical's inverse, with each layer's band extended past its
+    // edges so a rect can be cut to the layer's domain afterwards.
+    [[nodiscard]] double physicalFromScene(
+        std::size_t layer, int axis, double scene) const noexcept
+    {
+        const auto a = static_cast<std::size_t>(axis);
+        const bool vertical = axis == m_axes[1];
+        if (axis == m_geometry.perpendicularAxis) {
+            const auto& bounds = m_geometry.bounds[layer];
+            const auto k = m_perpendicularUnitsPerLength[layer];
+            return vertical
+                ? bounds.upper[a] - (scene - m_bandStart[layer]) / k
+                : bounds.lower[a] + (scene - m_bandStart[layer]) / k;
+        }
+        const auto& union_ = m_geometry.unionBounds;
+        const auto k = m_sharedUnitsPerLength[a];
+        return vertical ? union_.upper[a] - scene / k
+                        : union_.lower[a] + scene / k;
+    }
+
+    // The part of a layer's domain under a scene rect: the rect through the
+    // layer's maps, cut to its bounds, the normal axis whole. Nothing when
+    // the rect misses the layer, or meets it within the pairing tolerance
+    // only (a selection ending at the interface belongs to one side).
+    [[nodiscard]] std::optional<RealBox> regionForSceneRect(
+        std::size_t layer, const SceneRect& rect) const noexcept
+    {
+        const auto& bounds = m_geometry.bounds[layer];
+        const auto h = m_axes[0];
+        const auto v = m_axes[1];
+        const auto hs = static_cast<std::size_t>(h);
+        const auto vs = static_cast<std::size_t>(v);
+        RealBox region = bounds;
+        region.lower[hs] = std::max(bounds.lower[hs], physicalFromScene(layer, h, rect.x));
+        region.upper[hs]
+            = std::min(bounds.upper[hs], physicalFromScene(layer, h, rect.right()));
+        // Vertical scene coordinates count down: the rect's top is the
+        // region's upper bound.
+        region.upper[vs] = std::min(bounds.upper[vs], physicalFromScene(layer, v, rect.y));
+        region.lower[vs]
+            = std::max(bounds.lower[vs], physicalFromScene(layer, v, rect.bottom()));
+        for (const auto axis : {hs, vs}) {
+            const auto span = bounds.upper[axis] - bounds.lower[axis];
+            if (!(region.upper[axis] - region.lower[axis] > 1e-9 * span)) {
+                return std::nullopt;
+            }
+        }
+        return region;
     }
 
     // The scene rect a layer's raster over a physical region occupies.
