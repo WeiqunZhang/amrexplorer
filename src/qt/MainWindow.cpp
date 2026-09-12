@@ -1077,15 +1077,15 @@ void MainWindow::wirePanelSignals(ImageView* view, int normal)
                 return;  // the scene form below handles two datasets
             }
             if (auto* state = leading()) {
-                if (state->mappedGrid) {
-                    return;  // and a mapped view's physical canvas
+                if (isWarped(state->warp)) {
+                    return;  // and a warped view's physical canvas
                 }
                 rubberBandZoom(*state, sceneRect);
             }
         });
     // Over two datasets a selection may span both tiles: each layer gets
     // the part inside its own domain and re-slices for it (pairRubberBandZoom).
-    // Over a mapped view the scene is the physical canvas the tile sits on
+    // Over a warped view the scene is the physical canvas the tile sits on
     // (mappedRubberBandZoom).
     connect(view, &ImageView::rubberBandSelectedScene, this,
         [this, leading](const QRectF& sceneRect) {
@@ -1096,7 +1096,7 @@ void MainWindow::wirePanelSignals(ImageView* view, int normal)
             if (m_pair) {
                 setActiveView(*state);
                 pairRubberBandZoom(state->normal, sceneRect);
-            } else if (state->mappedGrid) {
+            } else if (isWarped(state->warp)) {
                 mappedRubberBandZoom(*state, sceneRect);
             }
         });
@@ -1460,13 +1460,29 @@ bool MainWindow::displayIsSphericalWarp() const
 
 bool MainWindow::mappedGridAvailable() const
 {
+    // A 2-D spherical plane is drawn on its (R, Z) wedge, which the pipeline
+    // takes over any node positions the plotfile may carry.
     return primary().session && primary().session->supportsMappedGrid()
-        && !m_pair && !m_layers[1].active;
+        && !m_pair && !m_layers[1].active && !displayIsSpherical();
 }
 
 bool MainWindow::displayIsMapped() const
 {
     return m_mappedGrid && mappedGridAvailable();
+}
+
+DisplayWarp MainWindow::requestedWarpFor(const PlaneViewState& state) const
+{
+    // The R-Z wedge first, as the pipeline decides it: a spherical plane is
+    // never drawn on a mapped grid. Otherwise the primary alone draws on its
+    // mapped grid; a companion's tile is placed affinely (mappedGridAvailable).
+    if (displayIsSphericalWarp()) {
+        return DisplayWarp::SphericalRZ;
+    }
+    if (state.layer == 0 && displayIsMapped()) {
+        return DisplayWarp::MappedGrid;
+    }
+    return DisplayWarp::None;
 }
 
 void MainWindow::updateMappedGridControls()
@@ -1481,6 +1497,8 @@ void MainWindow::updateMappedGridControls()
     if (!available && primary().session) {
         if (m_pair || m_layers[1].active) {
             reason = tr("Not available while a companion is open");
+        } else if (displayIsSpherical()) {
+            reason = tr("A 2-D spherical plotfile is drawn on its R-Z wedge");
         } else if (layerIsRemote(primary().planeViews.front())) {
             // The catalog does not yet say whether a remote plotfile carries
             // node positions, so the honest answer is the feature's status.
@@ -1498,11 +1516,6 @@ void MainWindow::updateSphericalControls()
     const bool spherical = displayIsSpherical();
     if (m_sphericalMenu != nullptr) {
         m_sphericalMenu->setEnabled(spherical);
-    }
-    if (m_sphericalSupersampleMenu != nullptr) {
-        // Supersampling only affects the R-Z warp.
-        m_sphericalSupersampleMenu->setEnabled(
-            spherical && m_sphericalDisplay == SphericalDisplay::RZ);
     }
 }
 
@@ -1587,9 +1600,9 @@ void MainWindow::applyDisplayStretch(PlaneViewState& state)
     if (state.view == nullptr) {
         return;
     }
-    if (m_pair || state.mappedGrid) {
-        // Two datasets, or a mapped grid: the tile's stretch is baked into
-        // its placement (PairLayout, MappedLayout), so the view itself
+    if (m_pair || isWarped(state.warp)) {
+        // Two datasets, or a warp: the tile's stretch is baked into its
+        // placement (PairLayout, MappedLayout), so the view itself
         // stretches nothing.
         state.view->setDisplayStretch(1.0, 1.0);
         return;
@@ -1608,6 +1621,14 @@ std::optional<MappedLayout> MainWindow::mappedLayout(
     const auto& metadata = session->metadata();
     const auto& finest = metadata.levels[static_cast<std::size_t>(
         std::max(0, metadata.finestLevel))];
+    if (state.warp == DisplayWarp::SphericalRZ) {
+        // Both display axes are lengths: one scene unit is one radial cell
+        // on R and Z alike (the theta cell is an angle). Axis Scaling is
+        // unavailable for a spherical plane, so unit factors.
+        const Real3 radialCell{{finest.cellSize[0], finest.cellSize[0], 1.0}};
+        return MappedLayout(*state.mappedCanvasBounds, displayAxes(state.normal),
+            {1.0, 1.0, 1.0}, radialCell, metadata.dimension);
+    }
     return MappedLayout(*state.mappedCanvasBounds, displayAxes(state.normal),
         m_axisScale, finest.cellSize, metadata.dimension);
 }
@@ -1630,7 +1651,7 @@ void MainWindow::applyDisplayStretches()
             continue;
         }
         applyDisplayStretch(*state);
-        if (state->mappedGrid && state->view->hasTileImage(state->tile)) {
+        if (isWarped(state->warp) && state->view->hasTileImage(state->tile)) {
             // The axis factors are the layout: the tile and its canvas move
             // to the new one, and the warp is drawn again for what the
             // viewport then shows.
@@ -1708,7 +1729,7 @@ RealBox MainWindow::volumeRegionOfInterest() const
         if (visible.isEmpty()) {
             continue;
         }
-        if (state.mappedGrid) {
+        if (state.warp == DisplayWarp::MappedGrid) {
             // The pixmap is the physical warp, but the volume samples the
             // logical grid: find the plane cells on screen through the
             // source index and box those, not the warp's physical bounds
@@ -1745,10 +1766,12 @@ PlaneMapping MainWindow::planeMapping(const PlaneViewState& state) const
     mapping.mode = state.sphericalDisplay;
     // The raster on screen, not the menu selection: between a toggle and the
     // re-drawn arrival the two disagree, and overlays must match the pixmap.
-    mapping.mapped = state.mappedGrid;
+    // The R-Z wedge keeps the analytic spherical arms: its pixmap is the
+    // window drawn at the view's pixels, over which those stay exact.
+    mapping.mapped = state.warp == DisplayWarp::MappedGrid;
     mapping.axes = displayAxes(state.normal);
-    mapping.nodes = state.gridNodes;
-    mapping.sourceIndex = state.displaySourceIndex;
+    mapping.nodes = mapping.mapped ? state.gridNodes : nullptr;
+    mapping.sourceIndex = mapping.mapped ? state.displaySourceIndex : nullptr;
     mapping.logicalRegion = state.plane->physicalRegion;
     mapping.displayRegion = state.displayRegion;
     mapping.sceneWidth = std::max(1, state.view->image(state.tile).width());
@@ -1921,33 +1944,6 @@ void MainWindow::createMenus()
         m_sphericalDisplayMenu->addAction(action);
     }
     m_sphericalMenu->addMenu(m_sphericalDisplayMenu);
-
-    // Warp resolution: higher factors trace the curved cell boundaries more
-    // smoothly at the cost of a larger warped raster.
-    m_sphericalSupersampleGroup = new QActionGroup(this);
-    m_sphericalSupersampleMenu = new QMenu(tr("&Supersampling"), this);
-    constexpr std::array<int, 5> supersampleFactors{1, 2, 4, 8, 16};
-    for (const auto factor : supersampleFactors) {
-        auto* action = new QAction(
-            tr("%1x").arg(factor), m_sphericalSupersampleMenu);
-        action->setCheckable(true);
-        action->setActionGroup(m_sphericalSupersampleGroup);
-        action->setData(factor);
-        action->setChecked(factor == m_sphericalSupersample);
-        connect(action, &QAction::triggered, this, [this, factor] {
-            if (factor == m_sphericalSupersample) {
-                return;
-            }
-            m_sphericalSupersample = factor;
-            saveSettings();
-            // Display-only change: re-warp the cached planes, no new query.
-            if (displayIsSpherical()) {
-                scheduleSliceRequest(true);
-            }
-        });
-        m_sphericalSupersampleMenu->addAction(action);
-    }
-    m_sphericalMenu->addMenu(m_sphericalSupersampleMenu);
 
     // "Mapped Grid": draw slices on the stretched grid a plotfile's nodal
     // positions describe (ERF, REMORA). Enabled per dataset in
