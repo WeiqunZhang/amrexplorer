@@ -527,7 +527,14 @@ void MainWindow::setSlicePosition(int axis, double value)
     // The other two views only need their crosshair guides redrawn; the view
     // normal to the moved axis gets a fresh (debounced) slice.
     updateCrosshairs();
+    // The layer the position just left keeps the slice it shows: hidden
+    // now, a slice at its face would only replace the tile held on show
+    // until the incoming layer's lands (updateShownLayers). It slices again
+    // when the position comes back into it.
     for (auto* state : statesForPanel(axis)) {
+        if (m_pair && !stateShown(*state)) {
+            continue;
+        }
         scheduleSliceRequest(*state);
     }
     updateShownLayers();
@@ -591,6 +598,13 @@ void MainWindow::flushSliceRequests()
     m_pendingRasterDirty = false;
     for (auto* state : targets) {
         requestSlice(*state, rasterDirty);
+    }
+    // A settle withheld for this queue (settleIfDrained) whose flush started
+    // nothing -- the requests were refused, or nothing was queued after all.
+    if (m_settleDeferred && m_diagnosticsModel->activeRequests() == 0
+        && !sliceRequestQueued()) {
+        m_settleDeferred = false;
+        emit interactiveSlicesSettled();
     }
 }
 
@@ -924,6 +938,13 @@ void MainWindow::requestSlice(PlaneViewState& state, bool rasterDirty)
                 reportVisibleSyncFailure(error);
             }
             updateDiagnostics();
+            // A layer switch waiting on this slice (updateShownLayers) is
+            // finished by showSlice; an arrival that never got there -- stale,
+            // failed -- must not leave the outgoing tile on show. Visibility
+            // only: a failed slice asked for again would fail again.
+            if (m_pair) {
+                updateShownLayers(/*sliceNewlyShown=*/false);
+            }
             watcher->deleteLater();
             settleIfDrained();
         });
@@ -1480,6 +1501,19 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
         }
         state.mappedCanvasBounds = bounds;
     }
+    // Over a pair the node box is the layer's display bounds: a wider one
+    // re-lays out the panel and re-places the other tile, once.
+    if (m_pair && m_viewDimension == 3 && updatePairLayouts()) {
+        applyPairLayouts();
+        // Every other warped tile moved with the layout (a node box grown on
+        // one panel's axis moves the others' bands too) while arrivals are
+        // held back: asked again for what they now show, once this one is in.
+        for (auto* other : currentViews()) {
+            if (other != &state && isWarped(other->warp)) {
+                QTimer::singleShot(0, this, [this, other] { updateMappedDemand(*other); });
+            }
+        }
+    }
     // Before the raster is installed, so a Fit is computed once, with the
     // stretch the raster was sized for: none on a mapped grid, whose tile
     // carries its own placement.
@@ -1540,28 +1574,19 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
             placement = virtualPlacementFor(
                 state, display.displayPlane().physicalRegion);
         }
-        const auto mapped = isWarped(display.warp) ? mappedLayout(state) : std::nullopt;
-        if (mapped) {
-            // The warp of the window it was asked for lands at that
-            // window's place on the canvas; the view's transform and
-            // scroll position are untouched (Preserve), a first warped
-            // arrival or a switch from the logical grid refits to the
-            // canvas. Never setImage: that would drop the canvas.
+        if (const auto placed = tilePlacement(state)) {
+            // A warp of the window it was asked for lands at that window's
+            // place on the canvas, a flat raster at its region's; the view's
+            // transform and scroll position are untouched (Preserve), a
+            // first warped arrival or a switch from the logical grid refits
+            // to the canvas. Over a pair the other tile stays where it is.
+            // Never setImage: that would drop the canvas.
+            const auto region = isWarped(display.warp)
+                ? display.displayRegion : display.displayPlane().physicalRegion;
             state.view->setTileImage(state.tile, image,
-                toQRectF(mapped->sceneRectForRegion(display.displayRegion)),
-                toQRectF(mapped->canvasRect()), transformPolicy);
-        } else if (m_pair && m_viewDimension == 3) {
-            // Two datasets share the panel's canvas: this tile lands at
-            // its layout position, the other tile stays where it is.
-            const auto& layout = pairLayout(state.normal);
-            const auto region = display.displayPlane().physicalRegion;
-            const auto rect = layout.sceneRectForRegion(state.layer, region);
-            const auto canvas = pairCanvasRect(state.normal);
-            state.view->setTileImage(state.tile, image,
-                QRectF(rect.x, rect.y, rect.width, rect.height),
-                QRectF(canvas.x, canvas.y, canvas.width, canvas.height),
-                transformPolicy);
-            state.view->setTileVisible(state.tile, stateShown(state));
+                toQRectF(placed->sceneRectForRegion(region)),
+                toQRectF(placed->canvas), transformPolicy);
+            applyPairTileVisibility(state);
         } else {
             state.view->setImage(image, transformPolicy,
                 logicalImageSize(state, display.displayPlane(), image),
@@ -1670,7 +1695,7 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
     // The straight-line profile tool works on the logical r-theta / theta-r
     // grid but not on the warped R-Z view, nor on a mapped grid, where a
     // straight screen line is not a constant logical coordinate.
-    state.view->setLineToolEnabled(!displayIsSphericalWarp() && !isWarped(state.warp));
+    updateLineToolAvailability(state);
     // The 2-D Spherical menu is available only for spherical datasets;
     // Aspect Ratio for the others.
     updateSphericalControls();
@@ -1705,9 +1730,11 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
 
     m_diagnosticsModel->setSliceMetrics(display.slice.metrics.blocksRead,
         display.slice.metrics.cacheHits, display.slice.metrics.payloadBytesRead);
-    if (state.layer == 0 && !display.mappedGridFallback.empty()) {
-        statusBar()->showMessage(tr("Mapped grid display is off: %1")
-                .arg(QString::fromStdString(display.mappedGridFallback)));
+    if (!display.mappedGridFallback.empty()) {
+        const auto message = tr("Mapped grid display is off: %1")
+            .arg(QString::fromStdString(display.mappedGridFallback));
+        statusBar()->showMessage(state.layer == 1
+                ? tr("%1: %2").arg(layerFor(state).name, message) : message);
     } else {
         statusBar()->clearMessage();
     }
@@ -1759,12 +1786,29 @@ int MainWindow::slicesInFlight() const
     return total;
 }
 
+bool MainWindow::sliceRequestQueued() const
+{
+    // The debounce timer is normally active while a request is queued, but some
+    // paths stop it without clearing the queue (see openDataset), so check the
+    // pending views too -- "queued behind the debounce" means either.
+    return (m_sliceDebounce != nullptr && m_sliceDebounce->isActive())
+        || m_pendingAllViews || !m_pendingViews.empty();
+}
+
 void MainWindow::settleIfDrained()
 {
-    // The interactive batch has drained once nothing is in flight; the smoke
-    // tests wait on this. A frame prefetch can still be running when the
-    // last slice lands, and nothing else would send the signal when it ends.
-    m_settleDeferred = m_diagnosticsModel->activeRequests() != 0;
+    // The interactive batch has drained once nothing is in flight AND nothing
+    // is queued; the smoke tests wait on this. An arrival can schedule the
+    // next request on its way through showSlice (a following companion, a
+    // warp asked for the screen): that request sits behind the 100 ms
+    // debounce, not in the activity count, so a settle here would come
+    // before it ran and a second settle after -- which the companion smoke
+    // once saw as "range following kept re-slicing at rest", on slow CI
+    // runners only. A withheld settle is sent by flushSliceRequests when the
+    // flush issues nothing, and by the completion of what it issues. A frame
+    // prefetch can likewise still be running when the last slice lands; its
+    // end sends the signal then (loadActivityChanged).
+    m_settleDeferred = m_diagnosticsModel->activeRequests() != 0 || sliceRequestQueued();
     if (!m_settleDeferred) {
         emit interactiveSlicesSettled();
     }
@@ -2006,34 +2050,42 @@ void MainWindow::syncVisibleRanges(DatasetLayer& layer)
                             placement = virtualPlacementFor(
                                 *state, state->plane->physicalRegion);
                         }
-                        const auto mapped = state->warp == DisplayWarp::MappedGrid
-                            ? mappedLayout(*state) : std::nullopt;
-                        if (mapped && outcome.mappedWindows[index]) {
+                        const bool warpedWindow
+                            = state->warp == DisplayWarp::MappedGrid
+                            && outcome.mappedWindows[index].has_value();
+                        if (state->warp == DisplayWarp::MappedGrid && !warpedWindow) {
+                            // The re-warp fell back: the tile is flat now and
+                            // the state says so, or the next relayout would
+                            // place it at the warp's window and the probe read
+                            // through the warp's index.
+                            state->warp = DisplayWarp::None;
+                            state->displaySourceIndex.reset();
+                            state->mappedNodeBounds = {};
+                            state->mappedWindow = {};
+                            state->mappedWindowPixels = {0, 0};
+                            state->displayRegion = state->plane->physicalRegion;
+                            updateLineToolAvailability(*state);
+                        }
+                        const auto placed = tilePlacement(*state);
+                        if (placed && (warpedWindow || m_pair)) {
                             // The re-coloured warp of the same window lands
-                            // where it was; the canvas and the view stay.
-                            state->displayRegion = *outcome.mappedWindows[index];
-                            state->displaySourceIndex
-                                = outcome.mappedSourceIndices[index];
+                            // where it was, a flat tile at its region; the
+                            // canvas and the view stay, and over a pair only
+                            // this layer's tile changes.
+                            if (warpedWindow) {
+                                state->displayRegion = *outcome.mappedWindows[index];
+                                state->displaySourceIndex
+                                    = outcome.mappedSourceIndices[index];
+                            }
+                            const auto region = warpedWindow
+                                ? state->displayRegion : state->plane->physicalRegion;
+                            state->pixmapRegion = region;
                             state->view->setTileImage(state->tile,
                                 outcome.images[index],
-                                toQRectF(mapped->sceneRectForRegion(
-                                    state->displayRegion)),
-                                toQRectF(mapped->canvasRect()),
+                                toQRectF(placed->sceneRectForRegion(region)),
+                                toQRectF(placed->canvas),
                                 ImageTransformPolicy::Preserve);
-                        } else if (m_pair && m_viewDimension == 3) {
-                            // Two datasets: only this layer's tile changes.
-                            const auto& layout = pairLayout(state->normal);
-                            const auto rect = layout.sceneRectForRegion(
-                                state->layer, state->plane->physicalRegion);
-                            const auto canvas = pairCanvasRect(state->normal);
-                            state->view->setTileImage(state->tile,
-                                outcome.images[index],
-                                QRectF(rect.x, rect.y, rect.width, rect.height),
-                                QRectF(canvas.x, canvas.y, canvas.width,
-                                    canvas.height),
-                                ImageTransformPolicy::Preserve);
-                            state->view->setTileVisible(
-                                state->tile, stateShown(*state));
+                            applyPairTileVisibility(*state);
                         } else {
                             state->view->setImage(outcome.images[index],
                                 ImageTransformPolicy::GeometryAware,
