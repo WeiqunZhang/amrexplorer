@@ -24,7 +24,8 @@
 #                 sequence-equal-size-transform-preserve |
 #                 sequence-geometry-refit | sequence-noop | sequence-failure |
 #                 remote-canvas-wheel | remote-cell-aspect |
-#                 physical-aspect | physical-fixed-scale |
+#                 physical-aspect | physical-fixed-scale | mapped-grid |
+#                 mapped-grid-sequence | mapped-grid-cap |
 #                 remote-physical-aspect | companion |
 #                 remote-companion | companion-derived | companion-zoom |
 #                 mixed-companion |
@@ -44,6 +45,9 @@ foreach(argument MATERIALIZER AMREXPLORER_QT SOURCE WORK MODE)
 endforeach()
 
 set(ENV{QT_QPA_PLATFORM} offscreen)
+# Qt logs to os_log / the debugger on macOS and Windows unless told to use
+# stderr; the driver needs a failed step's qCritical text in its output.
+set(ENV{QT_LOGGING_TO_CONSOLE} 1)
 
 # Isolate QSettings per run: a fresh, empty config directory makes every smoke
 # test start from defaults, so persisted UI state (spherical display mode and
@@ -236,6 +240,17 @@ elseif(MODE STREQUAL "physical-aspect")
 elseif(MODE STREQUAL "physical-fixed-scale")
     run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt")
     run_or_die("${AMREXPLORER_QT}" --physical-fixed-scale-smoke-test "${WORK}/plt")
+elseif(MODE STREQUAL "mapped-grid")
+    run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt")
+    run_or_die("${AMREXPLORER_QT}" --mapped-grid-smoke-test "${WORK}/plt")
+elseif(MODE STREQUAL "mapped-grid-sequence")
+    run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt00000")
+    run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt00010" "2.5")
+    run_or_die("${AMREXPLORER_QT}" --mapped-grid-sequence-smoke-test
+        "${WORK}/plt00000" "${WORK}/plt00010")
+elseif(MODE STREQUAL "mapped-grid-cap")
+    run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt")
+    run_or_die("${AMREXPLORER_QT}" --mapped-grid-cap-smoke-test "${WORK}/plt")
 elseif(MODE STREQUAL "remote-physical-aspect")
     run_or_die("${MATERIALIZER}" "${SOURCE}" "${WORK}/plt")
     run_or_die("${AMREXPLORER_QT}" --remote-physical-aspect-smoke-test

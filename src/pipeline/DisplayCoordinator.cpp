@@ -1,6 +1,7 @@
 #include <amrexplorer/pipeline/DisplayCoordinator.hpp>
 
 #include <amrexplorer/core/ValueMapping.hpp>
+#include <amrexplorer/pipeline/SlicePipeline.hpp>
 #include <amrexplorer/render2d/ScalarRenderer.hpp>
 
 #include <algorithm>
@@ -108,6 +109,9 @@ void DisplayCoordinator::realignArrivalToRange(SliceDisplayResult& result,
                 .logarithmic = result.logarithmic,
                 .palette = &palette
             });
+        // The arrival's raster was the warp of its plane; the re-coloured
+        // plane is warped the same way.
+        rewarpMappedImage(result);
     }
     recomputeContourPolylines(result);
 }

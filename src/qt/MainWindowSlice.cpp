@@ -1,6 +1,7 @@
 #include "MainWindowInternal.hpp"
 
 #include <QStandardItemModel>
+#include <utility>
 
 namespace amrvis::qt {
 
@@ -24,6 +25,7 @@ void MainWindow::enableDatasetControls(const DatasetMetadata& metadata)
     primary().levelSelector->setEnabled(true);
     primary().range->setControlsReady(true);
     m_boxesAction->setEnabled(true);
+    updateMappedGridControls();
     updateAspectControls();
     updateScaleBarAvailability();
     updatePairedModeControls();
@@ -71,7 +73,7 @@ void MainWindow::configureSliceControls()
     updateAnimationDockVisibility();
     configureSlicePositionControls();
     if (isThreeDimensional) {
-        m_isoWidget->setGeometry(metadata);
+        updateIsoGeometry();
         publishSlicePositions();
         // A primary reload under a companion: the isometric view keeps
         // outlining both domains, whether or not the companion reloads too.
@@ -389,6 +391,26 @@ void MainWindow::restoreVectorFields(const std::array<std::string, 3>& names)
     }
 }
 
+void MainWindow::updateIsoGeometry()
+{
+    if (!primary().session) {
+        return;
+    }
+    const auto& metadata = primary().session->metadata();
+    if (metadata.dimension != 3) {
+        return;
+    }
+    // Physical proportions stretched by the user's factors, as the slice
+    // panels are: a 50 km by 300 m ocean is a line otherwise, and its boxes
+    // with it. Volume rendering keeps its own unscaled wireframe.
+    const auto domain = datasetSampleBounds(metadata);
+    const auto factors = normalizedAxisScale(m_axisScale);
+    m_isoWidget->setGeometry(metadata,
+        [domain, factors](std::size_t, const Real3& point) {
+            return axisScaledDisplayPoint(domain, factors, point);
+        });
+}
+
 void MainWindow::publishSlicePositions()
 {
     m_isoWidget->setSlicePositions(m_slicePosition3d[0], m_slicePosition3d[1],
@@ -612,6 +634,21 @@ void MainWindow::requestSlice(PlaneViewState& state, bool rasterDirty)
     request.includeGridBoxes = m_boxesAction->isChecked();
     request.sphericalSupersample = m_sphericalSupersample;
     request.sphericalDisplay = m_sphericalDisplay;
+    // The primary alone draws on its mapped grid; a companion's tile is
+    // placed affinely (see mappedGridAvailable).
+    request.mappedGrid = state.layer == 0 && displayIsMapped();
+    if (request.mappedGrid) {
+        // The warp is drawn for the window the viewport shows, at its own
+        // device pixels (updateMappedDemand); until the view has asked for
+        // one -- the first mapped arrival -- over the whole node bounding
+        // box, sized to the viewport, which Fit then frames. The canvas the
+        // view lays that out on is asked for once, with the first arrival.
+        const bool windowed = state.mappedGrid && hasMappedWindow(state);
+        request.displayWindow = windowed ? state.mappedWindow : RealBox{};
+        request.displayPixels = windowed ? state.mappedWindowPixels
+                                         : viewportPixelSize(state);
+        request.wantMappedDomainBounds = !state.mappedCanvasBounds.has_value();
+    }
 
     const auto selection = layerFor(state).range->selection();
     auto rangeMode = effectiveRangeMode(dataset, request.field,
@@ -677,6 +714,14 @@ void MainWindow::requestSlice(PlaneViewState& state, bool rasterDirty)
                             != SphericalDisplay::RZ
                         && request.sphericalDisplay != SphericalDisplay::RZ))));
 
+    // Switching the mapped grid on or off changes the pixmap, and a mapped
+    // view whose warp never landed (a refresh overtook the request that
+    // carried it) still shows the logical raster: both need the raster
+    // drawn, whatever cosmetic change asked for this refresh.
+    rasterDirty = rasterDirty || request.mappedGrid != state.mappedGrid
+        || (request.mappedGrid && !state.displaySourceIndex
+            && state.view->hasImage());
+
     state.stopSource.request_stop();
     state.stopSource = StopSource{};
     const auto cancellation = state.stopSource.get_token();
@@ -710,11 +755,13 @@ void MainWindow::requestSlice(PlaneViewState& state, bool rasterDirty)
             displayPlane = state.plane,
             contourPlane = state.contourPlane,
             vectors = state.vectorSegments,
+            gridNodes = state.gridNodes,
             rangeMode, userRange, logarithmic, palette, displayMode,
             vectorUField, vectorVField, contourCount, rasterDirty,
             cancellation]() mutable {
             return refreshCachedSlice(dataset, request, std::move(displayPlane),
-                *contourPlane, std::move(vectors), rangeMode, userRange,
+                *contourPlane, std::move(vectors), std::move(gridNodes),
+                rangeMode, userRange,
                 logarithmic, palette, displayMode, vectorUField, vectorVField,
                 contourCount, rasterDirty, cancellation);
         });
@@ -873,11 +920,7 @@ void MainWindow::requestSlice(PlaneViewState& state, bool rasterDirty)
             }
             updateDiagnostics();
             watcher->deleteLater();
-            // The interactive re-slice batch has drained once no view has work
-            // in flight; the smoke test waits on this to read settled state.
-            if (m_diagnosticsModel->activeRequests() == 0) {
-                emit interactiveSlicesSettled();
-            }
+            settleIfDrained();
         });
     watcher->setFuture(future);
 }
@@ -950,6 +993,33 @@ void MainWindow::updateGridBoxes(PlaneViewState& state)
             }
             continue;
         }
+        if (state.mappedGrid) {
+            // The box's logical rectangle, in fractional plane pixels, drawn
+            // along the stretched cell edges it maps to.
+            if (!(xUpper > xLower) || !(yUpper > yLower)) {
+                continue;
+            }
+            const auto col0 = std::clamp(
+                (xLower - plane.physicalRegion.lower[xAxis]) / xExtent
+                    * plane.width, 0.0, static_cast<double>(plane.width));
+            const auto col1 = std::clamp(
+                (xUpper - plane.physicalRegion.lower[xAxis]) / xExtent
+                    * plane.width, 0.0, static_cast<double>(plane.width));
+            const auto row0 = std::clamp(
+                (yLower - plane.physicalRegion.lower[yAxis]) / yExtent
+                    * plane.height, 0.0, static_cast<double>(plane.height));
+            const auto row1 = std::clamp(
+                (yUpper - plane.physicalRegion.lower[yAxis]) / yExtent
+                    * plane.height, 0.0, static_cast<double>(plane.height));
+            if (!(col1 > col0) || !(row1 > row0)) {
+                continue;
+            }
+            GridBoxOverlay overlay;
+            overlay.color = color;
+            overlay.path = mappedCellPath(mapping, col0, col1, row0, row1);
+            overlays.push_back(std::move(overlay));
+            continue;
+        }
         const auto pixelX0 = std::round(
             (xLower - plane.physicalRegion.lower[xAxis])
                 / xExtent * plane.width);
@@ -1013,7 +1083,7 @@ void MainWindow::updateScaleBarAvailability()
     // only while that holds vertically too. The saved preference survives a
     // dataset or aspect setting on which the bar is withheld.
     // Withheld over two datasets: the bar would speak for one of them.
-    const bool available = primary().session && !m_pair
+    bool available = primary().session && !m_pair
         && displayIsPhysicallyIsotropic(
             primary().session->metadata(), displayStretchPerAxis());
     {
@@ -1034,21 +1104,37 @@ void MainWindow::updateCrosshairs(PlaneViewState& state)
         const auto axes = displayAxes(state.normal);
         const auto xAxis = static_cast<std::size_t>(axes[0]);
         const auto yAxis = static_cast<std::size_t>(axes[1]);
-        const auto& region = state.plane->physicalRegion;
-        const auto width = static_cast<double>(state.plane->width);
-        const auto height = static_cast<double>(state.plane->height);
+        // A mapped pixmap is physical over displayRegion and sized by the
+        // warp, not one pixel per plane cell; the guides live in pixmap
+        // pixels. The stretched axis (the last one) is then a curve at a
+        // constant logical coordinate, which a straight guide cannot
+        // follow, so that guide is left out; the horizontal in-plane axes
+        // keep theirs.
+        const bool mapped = state.mappedGrid && state.view->hasImage();
+        const auto& region = mapped ? state.displayRegion
+                                    : state.plane->physicalRegion;
+        const auto width = mapped
+            ? static_cast<double>(std::max(1, state.view->image(state.tile).width()))
+            : static_cast<double>(state.plane->width);
+        const auto height = mapped
+            ? static_cast<double>(std::max(1, state.view->image(state.tile).height()))
+            : static_cast<double>(state.plane->height);
+        const auto lastAxis = static_cast<std::size_t>(
+            layerFor(state).session->metadata().dimension - 1);
         // The vertical guide marks the slice position of the axis pointing
         // horizontally in this view, and vice versa; each guide takes that
         // axis' legacy palette color and hides outside the displayed region.
         const auto xPosition = m_slicePosition3d[xAxis];
-        if (xPosition >= region.lower[xAxis] && xPosition <= region.upper[xAxis]) {
+        if (xPosition >= region.lower[xAxis] && xPosition <= region.upper[xAxis]
+            && !(mapped && xAxis == lastAxis)) {
             const auto t = (xPosition - region.lower[xAxis])
                 / (region.upper[xAxis] - region.lower[xAxis]);
             vertical = QLineF(t * width, 0.0, t * width, height);
             verticalColor = sliceAxisColor(axes[0]);
         }
         const auto yPosition = m_slicePosition3d[yAxis];
-        if (yPosition >= region.lower[yAxis] && yPosition <= region.upper[yAxis]) {
+        if (yPosition >= region.lower[yAxis] && yPosition <= region.upper[yAxis]
+            && !(mapped && yAxis == lastAxis)) {
             const auto t = (yPosition - region.lower[yAxis])
                 / (region.upper[yAxis] - region.lower[yAxis]);
             const auto sceneY = height * (1.0 - t);
@@ -1121,6 +1207,16 @@ void MainWindow::appendMetadataRows(QTreeWidgetItem* root,
             coordinates = QString::number(metadata.coordinateSystem);
         }
         addValue(tr("Coordinate system"), coordinates);
+        if (metadata.hasMappedGrid) {
+            QStringList names;
+            if (result.mappedGrid) {
+                for (const auto& field : result.mappedGrid->fields) {
+                    names << QString::fromStdString(field.name);
+                }
+            }
+            addValue(tr("Mapped grid"), names.isEmpty()
+                ? tr("Yes") : tr("Yes (%1)").arg(names.join(QLatin1Char(' '))));
+        }
         Real3 extent;
         for (std::size_t axis = 0; axis < 3; ++axis) {
             extent[axis] = metadata.physicalDomain.upper[axis]
@@ -1361,9 +1457,58 @@ std::optional<QRectF> MainWindow::sphericalReframe(
 void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
     std::uint64_t sessionEpoch)
 {
+    // A refresh that kept the pixmap (rasterUnchanged) can say "mapped" of a
+    // pixmap that is not the warp: the request carrying the warp was
+    // overtaken before it landed. Such an arrival is shown as the logical
+    // raster it sits on, and the warp is asked for again.
+    const bool flatPixmap = display.mappedGrid && display.rasterUnchanged
+        && !display.displaySourceIndex
+        && !(state.mappedGrid && state.displaySourceIndex);
+    if (flatPixmap) {
+        display.mappedGrid = false;
+        display.gridNodes.reset();
+        display.displayRegion = display.displayPlane().physicalRegion;
+    }
+    // The view changes made while the arrival is installed (a Fit, a
+    // stretch) must not ask the warp for a window against the request this
+    // arrival replaces; it is asked once below, with the new request cached.
+    struct ApplyingArrival {
+        bool& flag;
+        bool previous;
+        explicit ApplyingArrival(bool& value)
+            : flag(value), previous(std::exchange(value, true)) {}
+        ~ApplyingArrival() { flag = previous; }
+    } applying{m_applyingArrival};
+    // A mapped arrival lays out on its canvas: the node bounding box of the
+    // whole domain, brought by the first arrival and grown -- never shrunk --
+    // by every later one, so the scene's anchor holds still.
+    if (display.mappedGrid) {
+        auto bounds = display.mappedDomainBounds.value_or(display.mappedBounds);
+        if (state.mappedCanvasBounds) {
+            for (const auto axis : displayAxes(state.normal)) {
+                const auto a = static_cast<std::size_t>(axis);
+                bounds.lower[a] = std::min(bounds.lower[a], state.mappedCanvasBounds->lower[a]);
+                bounds.upper[a] = std::max(bounds.upper[a], state.mappedCanvasBounds->upper[a]);
+            }
+        }
+        state.mappedCanvasBounds = bounds;
+    }
     // Before the raster is installed, so a Fit is computed once, with the
-    // stretch the raster was sized for.
+    // stretch the raster was sized for: none on a mapped grid, whose tile
+    // carries its own placement.
+    state.mappedGrid = display.mappedGrid;
+    state.mappedNodeBounds = display.mappedGrid ? display.mappedBounds : RealBox{};
+    if (!display.mappedGrid) {
+        // The next mapped arrival starts from the whole node box again, not
+        // from a window this view showed before it left the mapped grid.
+        state.mappedWindow = {};
+        state.mappedWindowPixels = {0, 0};
+    }
     applyDisplayStretch(state);
+    state.view->setSmoothPixmapTransformation(display.mappedGrid);
+    if (flatPixmap) {
+        scheduleSliceRequest(state, true);
+    }
     if (!display.rasterUnchanged) {
         if (!display.image.valid()) {
             throw std::runtime_error("renderer produced an invalid image");
@@ -1383,7 +1528,7 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
             const DisplayCoordinator::RasterGeometry incomingGeometry{
                 metadata.physicalDomain, metadata.dimension,
                 metadata.coordinateSystem, display.request.normalDirection,
-                display.sphericalDisplay};
+                display.sphericalDisplay, display.mappedGrid};
             const auto transformPolicy
                 = DisplayCoordinator::rasterTransformPolicy(
                     state.rasterGeometry, incomingGeometry);
@@ -1398,7 +1543,10 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
                 && state.cachedRequest.dataset != display.request.dataset;
             const bool densityChanged = DisplayCoordinator::planeDensitiesDiffer(
                 *state.plane, display.displayPlane(), axes);
+            // A mapped arrival lands on its canvas below and keeps the view
+            // as it is; the plane-pixel re-frame does not describe it.
             if (transformPolicy == ImageTransformPolicy::Preserve
+                && !display.mappedGrid
                 && state.view->transformMode()
                     == ImageView::TransformMode::Custom
                 && (ownerChanged || densityChanged)) {
@@ -1409,11 +1557,22 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
             // A view on a virtual canvas keeps it: the raster lands at its
             // cell offset while the scroll position stays put.
             std::optional<ImageView::VirtualPlacement> placement;
-            if (state.view->virtualCanvasActive() && !displayIsSpherical()) {
+            if (state.view->virtualCanvasActive() && !displayIsSpherical()
+                && !display.mappedGrid) {
                 placement = virtualPlacementFor(
                     state, display.displayPlane().physicalRegion);
             }
-            if (m_pair && m_viewDimension == 3) {
+            const auto mapped = display.mappedGrid ? mappedLayout(state) : std::nullopt;
+            if (mapped) {
+                // The warp of the window it was asked for lands at that
+                // window's place on the canvas; the view's transform and
+                // scroll position are untouched (Preserve), a first mapped
+                // arrival or a switch from the logical grid refits to the
+                // canvas. Never setImage: that would drop the canvas.
+                state.view->setTileImage(state.tile, image,
+                    toQRectF(mapped->sceneRectForRegion(display.displayRegion)),
+                    toQRectF(mapped->canvasRect()), transformPolicy);
+            } else if (m_pair && m_viewDimension == 3) {
                 // Two datasets share the panel's canvas: this tile lands at
                 // its layout position, the other tile stays where it is.
                 const auto& layout = pairLayout(state.normal);
@@ -1465,6 +1624,20 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
     state.coordinateSystem = display.coordinateSystem;
     state.sphericalDisplay = display.sphericalDisplay;
     state.displayRegion = display.displayRegion;
+    // Likewise the mapped-grid warp: the pixmap is physical over
+    // displayRegion, and these place plane pixels on it and back.
+    // A refresh that kept the pixmap (rasterUnchanged) drew nothing to
+    // index, so the index of the pixmap still on screen stays as well.
+    const bool keepIndex = display.mappedGrid && display.rasterUnchanged
+        && !display.displaySourceIndex;
+    state.mappedGrid = display.mappedGrid;
+    state.gridNodes = display.mappedGrid
+        ? (display.gridNodes ? display.gridNodes : state.gridNodes)
+        : nullptr;
+    if (!keepIndex) {
+        state.displaySourceIndex
+            = display.mappedGrid ? display.displaySourceIndex : nullptr;
+    }
     // The plotfile does not declare a length unit. The selected interpretation
     // is applied only while formatting the annotation; this width stays in
     // native coordinates. Theta-r puts an angle on the horizontal axis, so a
@@ -1498,6 +1671,13 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
     state.cachedVectorUField = display.vectorUField;
     state.cachedVectorVField = display.vectorVField;
     state.cachedContourCount = display.contourCount;
+    // With the new request cached, what the viewport shows is compared with
+    // what this warp was drawn for (a first arrival's Fit, a view moved while
+    // it was on its way): the ask the guard above held back. Queued: inside a
+    // sequence frame's display, a slice request would restart that frame.
+    if (state.mappedGrid) {
+        QTimer::singleShot(0, this, [this, &state] { updateMappedDemand(state); });
+    }
     if (m_activeView == &state
         || (m_pair && m_activeView != nullptr
             && m_activeView->normal == state.normal)) {
@@ -1508,12 +1688,15 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
         syncActiveViewColorControls(*m_activeView);
     }
     // The straight-line profile tool works on the logical r-theta / theta-r
-    // grid but not on the warped R-Z view.
-    state.view->setLineToolEnabled(!displayIsSphericalWarp());
+    // grid but not on the warped R-Z view, nor on a mapped grid, where a
+    // straight screen line is not a constant logical coordinate.
+    state.view->setLineToolEnabled(!displayIsSphericalWarp() && !state.mappedGrid);
     // The 2-D Spherical menu (and, within it, Supersampling only in R-Z mode)
     // is available only for spherical datasets; Aspect Ratio for the others.
     updateSphericalControls();
+    updateMappedGridControls();
     updateAspectControls();
+    updateScaleBarAvailability();
     if (m_viewDimension == 2) {
         // The 2-D view carries no axis indicator normally; spherical labels its
         // horizontal/vertical axes per display mode (R-Z, r-theta, or theta-r).
@@ -1542,7 +1725,12 @@ void MainWindow::showSlice(PlaneViewState& state, SliceDisplayResult display,
 
     m_diagnosticsModel->setSliceMetrics(display.slice.metrics.blocksRead,
         display.slice.metrics.cacheHits, display.slice.metrics.payloadBytesRead);
-    statusBar()->clearMessage();
+    if (state.layer == 0 && !display.mappedGridFallback.empty()) {
+        statusBar()->showMessage(tr("Mapped grid display is off: %1")
+                .arg(QString::fromStdString(display.mappedGridFallback)));
+    } else {
+        statusBar()->clearMessage();
+    }
 
     // The region a limited volume render covers is read off this raster, so it
     // is only now that a pan or a rubber-band zoom can be measured: the
@@ -1589,6 +1777,17 @@ int MainWindow::slicesInFlight() const
         }
     }
     return total;
+}
+
+void MainWindow::settleIfDrained()
+{
+    // The interactive batch has drained once nothing is in flight; the smoke
+    // tests wait on this. A frame prefetch can still be running when the
+    // last slice lands, and nothing else would send the signal when it ends.
+    m_settleDeferred = m_diagnosticsModel->activeRequests() != 0;
+    if (!m_settleDeferred) {
+        emit interactiveSlicesSettled();
+    }
 }
 
 int MainWindow::slicesInFlight(const DatasetLayer& layer) const
@@ -1660,6 +1859,13 @@ void MainWindow::syncVisibleRanges(DatasetLayer& layer)
         std::shared_ptr<const ScalarPlane> plane;
         std::shared_ptr<const ScalarPlane> contourPlane;
         std::array<int, 2> outputSize{0, 0};
+        // A panel drawn on the mapped grid is re-coloured and then re-warped
+        // through the same nodes and factor, so the re-coloured pixmap keeps
+        // the shape (and the source index) of the one it replaces.
+        std::shared_ptr<const MappedGridPlane> gridNodes;
+        std::array<int, 2> axes{0, 1};
+        RealBox displayWindow{};
+        std::array<int, 2> displayPixels{0, 0};
     };
     std::array<PlaneViewState*, 3> views{
         &layer.planeViews[0], &layer.planeViews[1], &layer.planeViews[2]};
@@ -1671,13 +1877,22 @@ void MainWindow::syncVisibleRanges(DatasetLayer& layer)
     for (std::size_t index = 0; index < views.size(); ++index) {
         const auto* state = views[index];
         snapshots[index] = {state->plane, state->contourPlane,
-            state->cachedRequest.outputSize};
+            state->cachedRequest.outputSize,
+            state->mappedGrid ? state->gridNodes : nullptr,
+            displayAxes(state->normal),
+            state->cachedRequest.displayWindow,
+            state->cachedRequest.displayPixels};
         snapshotGenerations[index] = state->renderGeneration;
     }
 
     struct SyncOutcome {
         std::optional<DisplayCoordinator::SharedRangeSync> sync;
         std::array<QImage, 3> images;   // display-ready (flipped) rasters
+        // A mapped panel's re-warp: the window drawn and its source index,
+        // adopted with the image so probe and overlays keep matching it.
+        std::array<std::optional<RealBox>, 3> mappedWindows;
+        std::array<std::shared_ptr<const std::vector<std::int32_t>>, 3>
+            mappedSourceIndices;
     };
 
     // This dispatch consumes any deferred request; a request that lands while
@@ -1732,9 +1947,7 @@ void MainWindow::syncVisibleRanges(DatasetLayer& layer)
                         reportVisibleSyncFailure(error);
                     }
                 }
-                if (m_diagnosticsModel->activeRequests() == 0) {
-                    emit interactiveSlicesSettled();
-                }
+                settleIfDrained();
             };
             // Only the extraction is guarded: takeResult rethrows a worker
             // exception (a failed extrema scan or render), which must not
@@ -1809,11 +2022,25 @@ void MainWindow::syncVisibleRanges(DatasetLayer& layer)
                         // placement so the scroll position stays put.
                         std::optional<ImageView::VirtualPlacement> placement;
                         if (state->view->virtualCanvasActive()
-                            && !displayIsSpherical()) {
+                            && !displayIsSpherical() && !state->mappedGrid) {
                             placement = virtualPlacementFor(
                                 *state, state->plane->physicalRegion);
                         }
-                        if (m_pair && m_viewDimension == 3) {
+                        const auto mapped = state->mappedGrid
+                            ? mappedLayout(*state) : std::nullopt;
+                        if (mapped && outcome.mappedWindows[index]) {
+                            // The re-coloured warp of the same window lands
+                            // where it was; the canvas and the view stay.
+                            state->displayRegion = *outcome.mappedWindows[index];
+                            state->displaySourceIndex
+                                = outcome.mappedSourceIndices[index];
+                            state->view->setTileImage(state->tile,
+                                outcome.images[index],
+                                toQRectF(mapped->sceneRectForRegion(
+                                    state->displayRegion)),
+                                toQRectF(mapped->canvasRect()),
+                                ImageTransformPolicy::Preserve);
+                        } else if (m_pair && m_viewDimension == 3) {
                             // Two datasets: only this layer's tile changes.
                             const auto& layout = pairLayout(state->normal);
                             const auto rect = layout.sceneRectForRegion(
@@ -1943,7 +2170,22 @@ void MainWindow::syncVisibleRanges(DatasetLayer& layer)
                 palette);
             if (outcome.sync) {
                 for (std::size_t index = 0; index < inputs.size(); ++index) {
-                    const auto& image = outcome.sync->panels[index].image;
+                    auto& image = outcome.sync->panels[index].image;
+                    const auto& snapshot = snapshots[index];
+                    if (image.valid() && image.width > 0 && snapshot.gridNodes) {
+                        // The panel shows the warp of its plane, so the
+                        // re-coloured plane is warped the same way, for the
+                        // same window at the same pixels.
+                        auto warped = warpMappedGrid(image, *snapshot.gridNodes,
+                            snapshot.axes, snapshot.displayWindow,
+                            snapshot.displayPixels);
+                        image = std::move(warped.image);
+                        if (warped.sourceIndex) {
+                            outcome.mappedWindows[index] = warped.displayRegion;
+                            outcome.mappedSourceIndices[index]
+                                = std::move(warped.sourceIndex);
+                        }
+                    }
                     if (image.valid() && image.width > 0) {
                         outcome.images[index] = displayImageFor(image);
                     }
@@ -2042,6 +2284,13 @@ void MainWindow::prepareSequence(std::size_t frameCount)
     // a plain open does.
     m_particleController->resetSettings();
     m_remoteSequenceConnectionGeneration = 0;
+    // A mapped view's canvas and window belong to the outgoing dataset.
+    for (auto* state : allViewStates()) {
+        state->mappedCanvasBounds.reset();
+        state->mappedWindow = {};
+        state->mappedWindowPixels = {0, 0};
+        state->mappedNodeBounds = {};
+    }
     // Frame 0 is not installed yet, so primary().session still describes the outgoing
     // one. Take the overlay dialogs' menu items down with the dialogs above,
     // the way a plain open's teardown does; configureSequenceControls and
@@ -2312,7 +2561,7 @@ void MainWindow::configureSequenceControls(
                 : std::clamp(m_slicePosition3d[axis], domain.lower[axis],
                     std::nextafter(domain.upper[axis], domain.lower[axis]));
         }
-        m_isoWidget->setGeometry(metadata);
+        updateIsoGeometry();
         publishSlicePositions();
     }
     m_stack->setCurrentIndex(isThreeDimensional ? 1 : 0);
@@ -2390,6 +2639,7 @@ FrameSliceSpec MainWindow::buildFrameSpec()
     spec.contourCount = m_contourCount;
     spec.sphericalSupersample = m_sphericalSupersample;
     spec.sphericalDisplay = m_sphericalDisplay;
+    spec.mappedGrid = m_mappedGrid;
     {
         const auto selection = primary().range->selection();
         spec.logarithmic = selection.logarithmic;
@@ -2445,7 +2695,23 @@ FrameSliceSpec MainWindow::buildFrameSpec()
             spec.outputSizes.push_back(stretchedViewportPixelSize(*state));
         }
     }
+    fillMappedDisplays(spec, views);
     return spec;
+}
+
+void MainWindow::fillMappedDisplays(FrameSliceSpec& spec,
+    const std::vector<PlaneViewState*>& views) const
+{
+    spec.displayWindows.clear();
+    spec.displayPixels.clear();
+    for (const auto* state : views) {
+        // The window a mapped view shows at its pixels; without one, the
+        // whole node box at the viewport's.
+        const bool windowed = state->mappedGrid && hasMappedWindow(*state);
+        spec.displayWindows.push_back(windowed ? state->mappedWindow : RealBox{});
+        spec.displayPixels.push_back(
+            windowed ? state->mappedWindowPixels : viewportPixelSize(*state));
+    }
 }
 
 void MainWindow::stepSweep(int direction)

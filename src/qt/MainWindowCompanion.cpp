@@ -15,11 +15,6 @@ namespace amrvis::qt {
 
 namespace {
 
-QRectF toQRectF(const SceneRect& rect)
-{
-    return QRectF(rect.x, rect.y, rect.width, rect.height);
-}
-
 bool sameRegion(const std::optional<RealBox>& a, const std::optional<RealBox>& b)
 {
     if (a.has_value() != b.has_value()) {
@@ -220,6 +215,12 @@ void MainWindow::openCompanionImpl(
     }
     if (m_sequenceController->hasSequence()) {
         refuse(tr("a plotfile sequence cannot take a companion"));
+        return;
+    }
+    if (displayIsMapped()) {
+        // A pair places its tiles affinely, which a stretched grid's
+        // physically uniform pixmap does not fit.
+        refuse(tr("switch off View > Mapped Grid first"));
         return;
     }
     if (!canOpenCompanion()) {
@@ -508,6 +509,7 @@ void MainWindow::installCompanion(const std::filesystem::path& path,
     }
     updateShownLayers();
     updatePairedModeControls();
+    updateMappedGridControls();
     configureSlicePositionControls();
     updateCrosshairs();
     updateScaleBarAvailability();
@@ -617,7 +619,7 @@ void MainWindow::tearDownCompanion(bool replacing)
     if (m_controlsReady && primary().session) {
         const auto& metadata = primary().session->metadata();
         if (metadata.dimension == 3) {
-            m_isoWidget->setGeometry(metadata);
+            updateIsoGeometry();
             // The shared position may sit in the companion's part of the
             // union; back inside the primary, and that panel re-sliced. A
             // replacement keeps it for the new union (see installCompanion).
@@ -636,8 +638,15 @@ void MainWindow::tearDownCompanion(bool replacing)
             publishSlicePositions();
         }
         updatePairedModeControls();
+        updateMappedGridControls();
+        updateAspectControls();
         configureSlicePositionControls();
         applyDisplayStretches();
+        if (!replacing && displayIsMapped()) {
+            // The pair kept the primary on its logical grid; the choice
+            // that was waiting applies again.
+            scheduleSliceRequest(true);
+        }
         if (!replacing) {
             // A remote primary's fixed scale rides a demand-driven virtual
             // canvas, which the pair displaced (installCompanion); each panel
@@ -646,6 +655,7 @@ void MainWindow::tearDownCompanion(bool replacing)
             for (auto* state : primaryViews()) {
                 auto* view = state->view;
                 if (view == nullptr || !layerIsRemote(*state) || displayIsSpherical()
+                    || state->mappedGrid
                     || view->transformMode() != ImageView::TransformMode::FixedScale) {
                     continue;
                 }
@@ -775,7 +785,9 @@ void MainWindow::applyPairLayouts()
                 toQRectF(layout.sceneRectForRegion(state->layer,
                     state->plane->physicalRegion)),
                 toQRectF(pairCanvasRect(state->normal)));
-        } else {
+        } else if (!state->mappedGrid) {
+            // A mapped tile stays on its own canvas (MappedLayout); the
+            // others go back to the classic raster-at-origin scene.
             const auto& image = view->image(state->tile);
             view->placeTile(state->tile,
                 QRectF(QPointF(0.0, 0.0), QSizeF(image.size())), std::nullopt);

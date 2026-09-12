@@ -1,6 +1,7 @@
 #pragma once
 
 #include <amrexplorer/core/DerivedField.hpp>
+#include <amrexplorer/core/MappedGrid.hpp>
 #include <amrexplorer/core/Metadata.hpp>
 #include <amrexplorer/core/Request.hpp>
 #include <amrexplorer/core/Result.hpp>
@@ -64,8 +65,35 @@ struct SliceDisplayResult {
     // Physical bounds of `image` in display space: slice.plane.physicalRegion
     // for non-spherical data, the (R, Z) sector bounding box for 2-D spherical
     // R-Z, or the (possibly axis-swapped) logical bounds for r-theta / theta-r.
-    // Overlays and the probe map through this.
+    // Overlays and the probe map through this. For a mapped-grid display it
+    // is the window the warp was drawn for (request.displayWindow, or the
+    // node bounding box without one), indexed on the dataset axes like the
+    // Cartesian case.
     RealBox displayRegion;
+    // Mapped-grid display: the node bounding box of the whole plane on the
+    // same axes, and, when the request asked for it, the node bounding box of
+    // the whole domain on this slice's plane -- the canvas a view anchors its
+    // scene to.
+    RealBox mappedBounds;
+    std::optional<RealBox> mappedDomainBounds;
+    // Set when `image` was drawn on the dataset's mapped grid
+    // (request.mappedGrid on a session that supportsMappedGrid()): the node
+    // positions the raster cells were placed by, and, parallel to image.rgba
+    // (row 0 = bottom, before displayImageFor's flip), the raster pixel each
+    // display pixel shows or -1. Overlays anchored in raster-pixel space map
+    // forward through gridNodes; the probe maps back through the index.
+    bool mappedGrid = false;
+    std::shared_ptr<const MappedGridPlane> gridNodes;
+    std::shared_ptr<const std::vector<std::int32_t>> displaySourceIndex;
+    // The dataset axes gridNodes.a and .b run along (slicePlaneAxes), kept so
+    // a re-colouring of the plane can be warped the same way without asking
+    // the dataset again (DisplayCoordinator::realignArrivalToRange).
+    std::array<int, 2> mappedAxes{0, 1};
+    // Why a requested mapped grid was not drawn although the session has
+    // one (plain untranslated text, empty otherwise): today, node blocks
+    // that do not fit the cache budget. The display is then Cartesian, and
+    // the GUI says so rather than let the flat raster pass for the warp.
+    std::string mappedGridFallback;
     std::vector<VectorSegment> vectors;
     // Contour modes only: the plane the contours were traced on (at contour
     // resolution, which since #56 removed supersampling is the plane the
@@ -153,6 +181,18 @@ struct FrameSliceSpec {
     int sphericalSupersample = 4;
     // 2-D spherical display layout carried across frame loads.
     SphericalDisplay sphericalDisplay = SphericalDisplay::RZ;
+    // Mapped-grid display carried across frame loads (see
+    // SliceRequest::mappedGrid). A frame without node positions draws its
+    // logical grid and says so on SliceDisplayResult::mappedGrid. Each view's
+    // warp is drawn as displayWindows and displayPixels say, and the frame
+    // carries the domain bounds a view anchors its canvas to.
+    bool mappedGrid = false;
+    // Per view (normal order): the window a mapped view shows and its device
+    // pixels (SliceRequest::displayWindow, displayPixels), so a frame lands
+    // drawn for the screen. An invalid window is the whole node bounding box;
+    // without an entry the pixels are the outputSizes entry (or the raster's).
+    std::vector<RealBox> displayWindows;
+    std::vector<std::array<int, 2>> displayPixels;
     bool defaultPositions = true;
     std::array<double, 3> slicePositions{0.0, 0.0, 0.0};
     std::vector<std::optional<RealBox>> visibleRegions;  // per view, normal order
@@ -304,6 +344,9 @@ void appendContours(const std::shared_ptr<DatasetSession>& dataset,
 // Re-render-from-cache: only palette/log/range/contour-count cosmetics
 // changed (the request still matches the view's cache key), so the cached
 // planes are re-ranged, re-rendered, and re-contoured without any SliceQuery.
+// gridNodes are the view's cached mapped-grid nodes (null when it has none):
+// a mapped refresh warps through them instead of asking the session again,
+// and the same request spec guarantees they still fit the plane.
 // With rasterDirty false the raster is known unchanged and the image is not
 // re-rendered; SliceDisplayResult::rasterUnchanged tells the GUI to keep
 // the view's pixmap. Vector glyphs are reused from the cache: they do not
@@ -313,6 +356,7 @@ void appendContours(const std::shared_ptr<DatasetSession>& dataset,
     const SliceRequest& request,
     std::shared_ptr<const ScalarPlane> displayPlanePtr,
     ScalarPlane contourPlane, std::vector<VectorSegment> vectors,
+    std::shared_ptr<const MappedGridPlane> gridNodes,
     RangeMode rangeMode,
     const std::optional<std::pair<double, double>>& userRange,
     bool logarithmic, const Palette& palette, DisplayMode displayMode,
@@ -334,6 +378,13 @@ void appendContours(const std::shared_ptr<DatasetSession>& dataset,
 // SliceDisplayResult overload: regenerate the polylines to match the result's
 // current (possibly replaced) minimum/maximum. No-op outside contour modes.
 void recomputeContourPolylines(SliceDisplayResult& result);
+
+// Re-warps a mapped-grid display after its plane was re-coloured in place
+// (a shared 3-D Visible range, a range realignment): the fresh flat raster
+// is put through the same nodes, axes, window and pixels, and the image, its
+// region and its source index are replaced together. No-op for a Cartesian
+// display or one without nodes.
+void rewarpMappedImage(SliceDisplayResult& result);
 
 // Loads the selected particle species in dataset discovery order. Unknown
 // names are ignored, matching the behavior needed when a plotfile sequence

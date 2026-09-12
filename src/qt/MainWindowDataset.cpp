@@ -217,6 +217,13 @@ void MainWindow::restoreSettings()
             }
         }
     }
+    if (m_mappedGridAction != nullptr) {
+        // Blocked: the toggle handler re-slices, and nothing is loaded yet.
+        const QSignalBlocker mappedBlocker(m_mappedGridAction);
+        m_mappedGrid = settings.value(
+            QStringLiteral("mappedGrid/enabled"), false).toBool();
+        m_mappedGridAction->setChecked(m_mappedGrid);
+    }
     if (m_aspectGroup != nullptr) {
         const auto stored = settings.value(QStringLiteral("aspect/mode"),
             static_cast<int>(m_aspectMode)).toInt();
@@ -264,6 +271,7 @@ void MainWindow::saveSettings()
         static_cast<int>(m_sphericalDisplay));
     settings.setValue(QStringLiteral("aspect/mode"),
         static_cast<int>(m_aspectMode));
+    settings.setValue(QStringLiteral("mappedGrid/enabled"), m_mappedGrid);
 }
 
 void MainWindow::updateWindowTitle()
@@ -831,6 +839,30 @@ void MainWindow::applyDatasetCellHighlight(PlaneViewState& state)
     const auto& region = plane.physicalRegion;
     const auto xExtent = region.upper[xAxis] - region.lower[xAxis];
     const auto yExtent = region.upper[yAxis] - region.lower[yAxis];
+    if (state.mappedGrid) {
+        // The cell's logical rectangle in plane pixels, outlined along the
+        // stretched edges it maps to (as updateGridBoxes does).
+        const auto clampCol = [&](double value) {
+            return std::clamp(value, 0.0, static_cast<double>(plane.width));
+        };
+        const auto clampRow = [&](double value) {
+            return std::clamp(value, 0.0, static_cast<double>(plane.height));
+        };
+        const auto col0 = clampCol(
+            (physicalCell.lower[xAxis] - region.lower[xAxis]) / xExtent * plane.width);
+        const auto col1 = clampCol(
+            (physicalCell.upper[xAxis] - region.lower[xAxis]) / xExtent * plane.width);
+        const auto row0 = clampRow(
+            (physicalCell.lower[yAxis] - region.lower[yAxis]) / yExtent * plane.height);
+        const auto row1 = clampRow(
+            (physicalCell.upper[yAxis] - region.lower[yAxis]) / yExtent * plane.height);
+        std::optional<QPainterPath> highlight;
+        if (col1 > col0 && row1 > row0) {
+            highlight = mappedCellPath(planeMapping(state), col0, col1, row0, row1);
+        }
+        state.view->setCellHighlightPath(highlight, state.tile);
+        return;
+    }
     // Same physical-to-scene mapping updateGridBoxes applies; plane row 0 is
     // the image bottom, so scene y runs opposite to physical y.
     const auto pixelX0 = (physicalCell.lower[xAxis] - region.lower[xAxis])
@@ -938,6 +970,13 @@ void MainWindow::openDatasetImpl(const std::filesystem::path& path,
         state->visibleRegion.reset();
         state->vectorSegments.clear();
         state->gridBoxes.clear();
+        state->mappedGrid = false;
+        state->gridNodes.reset();
+        state->displaySourceIndex.reset();
+        state->mappedCanvasBounds.reset();
+        state->mappedWindow = {};
+        state->mappedWindowPixels = {0, 0};
+        state->mappedNodeBounds = {};
         state->cachedRequest = {};
         state->hasCachedRequest = false;
         state->cachedMode = DisplayMode::Raster;
@@ -1247,6 +1286,7 @@ void MainWindow::requestInitialSlice(
         spec.contourCount = m_contourCount;
         spec.sphericalSupersample = m_sphericalSupersample;
         spec.sphericalDisplay = m_sphericalDisplay;
+        spec.mappedGrid = m_mappedGrid;
     }
     const auto isRemote = load.isRemote();
     if (spec.outputSizes.size() != views.size()) {
@@ -1261,6 +1301,9 @@ void MainWindow::requestInitialSlice(
             spec.outputSizes.push_back(outputSize);
         }
     }
+    // What each view shows now, whatever a restored spec carried: after an
+    // open the views start over, while a reload keeps its windows.
+    fillMappedDisplays(spec, views);
     const auto restoredSpec = initialSpec;
     // Per-view generations captured now: a view that gets a newer request
     // before the initial slices land keeps its newer data.

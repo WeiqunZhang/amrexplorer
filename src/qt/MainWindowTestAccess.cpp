@@ -203,6 +203,16 @@ void MainWindow::configureContourSyncForTest(
     scheduleSliceRequest(false);
 }
 
+void MainWindow::setDisplayModeForTest(DisplayMode mode, int contourCount)
+{
+    if (!primary().session) {
+        return;
+    }
+    m_displayMode = mode;
+    m_contourCount = contourCount;
+    scheduleSliceRequest(false);
+}
+
 std::vector<MainWindow::ContourViewProbe>
 MainWindow::contourViewProbesForTest()
 {
@@ -482,6 +492,114 @@ bool MainWindow::aspectMenuEnabledForTest() const
     return m_aspectMenu != nullptr && m_aspectMenu->isEnabled();
 }
 
+AspectMode MainWindow::aspectMenuCheckedModeForTest() const
+{
+    if (m_aspectGroup != nullptr) {
+        if (const auto* checked = m_aspectGroup->checkedAction()) {
+            return static_cast<AspectMode>(checked->data().toInt());
+        }
+    }
+    return m_aspectMode;
+}
+
+bool MainWindow::aspectRadiosEnabledForTest() const
+{
+    return m_aspectCellCountsAction != nullptr && m_aspectPhysicalAction != nullptr
+        && m_aspectCellCountsAction->isEnabled()
+        && m_aspectPhysicalAction->isEnabled();
+}
+
+void MainWindow::setMappedGridForTest(bool enabled)
+{
+    if (m_mappedGridAction != nullptr) {
+        m_mappedGridAction->setChecked(enabled);
+    }
+}
+
+bool MainWindow::mappedGridMenuEnabledForTest() const
+{
+    return m_mappedGridMenu != nullptr && m_mappedGridMenu->isEnabled();
+}
+
+bool MainWindow::displayIsMappedForTest() const
+{
+    return displayIsMapped();
+}
+
+bool MainWindow::activeViewIsMappedForTest() const
+{
+    return m_activeView != nullptr && m_activeView->mappedGrid;
+}
+
+QRectF MainWindow::activeViewMappedWindowForTest() const
+{
+    if (m_activeView == nullptr || !m_activeView->hasCachedRequest
+        || !layerFor(*m_activeView).session) {
+        return {};
+    }
+    const auto& window = m_activeView->cachedRequest.displayWindow;
+    const auto axes = displayAxes(m_activeView->normal);
+    const auto h = static_cast<std::size_t>(axes[0]);
+    const auto v = static_cast<std::size_t>(axes[1]);
+    if (!(window.upper[h] > window.lower[h]) || !(window.upper[v] > window.lower[v])) {
+        return {};
+    }
+    return QRectF(QPointF(window.lower[h], window.lower[v]),
+        QPointF(window.upper[h], window.upper[v]));
+}
+
+MainWindow::MappedPanelForTest MainWindow::mappedPanelForTest(int normal) const
+{
+    MappedPanelForTest panel;
+    if (m_viewDimension != 3 || normal < 0 || normal > 2) {
+        return panel;
+    }
+    const auto& state = primary().planeViews[static_cast<std::size_t>(normal)];
+    const auto* view = state.view;
+    if (view == nullptr || view->viewport() == nullptr || !view->hasImage()) {
+        return panel;
+    }
+    panel.mapped = state.mappedGrid;
+    panel.fit = view->isFitToWindow();
+    panel.resliced = state.visibleRegion.has_value();
+    if (state.hasCachedRequest) {
+        const auto& drawn = state.cachedRequest.displayWindow;
+        const auto axes = displayAxes(state.normal);
+        const auto h = static_cast<std::size_t>(axes[0]);
+        const auto v = static_cast<std::size_t>(axes[1]);
+        if (drawn.upper[h] > drawn.lower[h] && drawn.upper[v] > drawn.lower[v]) {
+            panel.window = QRectF(QPointF(drawn.lower[h], drawn.lower[v]),
+                QPointF(drawn.upper[h], drawn.upper[v]));
+        }
+    }
+    panel.image = view->image(state.tile).size();
+    panel.tile = view->tileSceneRect(state.tile);
+    const auto ratio = view->devicePixelRatioF();
+    const auto onScreen = view->viewportTransform().mapRect(panel.tile);
+    panel.tileDevice = QRectF(onScreen.x() * ratio, onScreen.y() * ratio,
+        onScreen.width() * ratio, onScreen.height() * ratio);
+    panel.canvas = view->sceneRect();
+    panel.visible = view->mapToScene(view->viewport()->rect()).boundingRect();
+    panel.scale = view->transform().m11();
+    return panel;
+}
+
+void MainWindow::setActiveViewForTest(int normal)
+{
+    if (m_viewDimension != 3 || normal < 0 || normal > 2) {
+        return;
+    }
+    setActiveView(primary().planeViews[static_cast<std::size_t>(normal)]);
+}
+
+QString MainWindow::probeReadoutActiveViewForTest(int x, int y) const
+{
+    if (m_activeView == nullptr || !m_activeView->plane) {
+        return {};
+    }
+    return probeReadout(*m_activeView, x, y);
+}
+
 int MainWindow::panelTileCountForTest(int normal) const
 {
     if (normal < 0 || normal > 2) {
@@ -664,10 +782,52 @@ void MainWindow::rubberBandZoomActiveViewForTest()
         || m_activeView->plane->height <= 0) {
         return;
     }
+    // The central half of what the view reports: the plane's pixels for a
+    // classic raster, the tile's scene rect (the physical canvas) on a mapped
+    // grid -- the two forms the rubber-band signals carry.
+    if (m_activeView->mappedGrid && m_activeView->view->hasImage()) {
+        const auto tile = m_activeView->view->tileSceneRect(m_activeView->tile);
+        mappedRubberBandZoom(*m_activeView,
+            QRectF(tile.left() + 0.25 * tile.width(), tile.top() + 0.25 * tile.height(),
+                0.5 * tile.width(), 0.5 * tile.height()));
+        return;
+    }
     const auto width = static_cast<double>(m_activeView->plane->width);
     const auto height = static_cast<double>(m_activeView->plane->height);
     rubberBandZoom(*m_activeView,
         QRectF(0.25 * width, 0.25 * height, 0.5 * width, 0.5 * height));
+}
+
+QRectF MainWindow::activeViewPlaneRegionForTest() const
+{
+    if (m_activeView == nullptr || !m_activeView->plane) {
+        return {};
+    }
+    const auto& region = m_activeView->plane->physicalRegion;
+    const auto axes = displayAxes(m_activeView->normal);
+    const auto h = static_cast<std::size_t>(axes[0]);
+    const auto v = static_cast<std::size_t>(axes[1]);
+    return QRectF(QPointF(region.lower[h], region.lower[v]),
+        QPointF(region.upper[h], region.upper[v]));
+}
+
+std::array<double, 4> MainWindow::activeViewTransformAndScrollForTest() const
+{
+    if (m_activeView == nullptr || m_activeView->view == nullptr) {
+        return {0.0, 0.0, 0.0, 0.0};
+    }
+    const auto* view = m_activeView->view;
+    const auto transform = view->transform();
+    return {transform.m11(), transform.m22(),
+        static_cast<double>(view->horizontalScrollBar()->value()),
+        static_cast<double>(view->verticalScrollBar()->value())};
+}
+
+void MainWindow::scrollActiveViewForTest(int dx, int dy)
+{
+    if (m_activeView != nullptr && m_activeView->view != nullptr) {
+        m_activeView->view->panViewport(QPoint(dx, dy));
+    }
 }
 
 void MainWindow::rubberBandZoomRectangularActiveViewForTest()
@@ -1043,6 +1203,15 @@ void MainWindow::viewFabForTest(std::size_t index)
     m_fabNavigator->viewEntry(index);
 }
 
+QRectF MainWindow::activeViewVisibleImageRectForTest() const
+{
+    if (m_activeView == nullptr || m_activeView->view == nullptr
+        || !m_activeView->view->hasImage()) {
+        return {};
+    }
+    return m_activeView->view->visibleImageRect();
+}
+
 bool MainWindow::activeViewIsZoomedForTest() const
 {
     return m_activeView != nullptr && m_activeView->visibleRegion.has_value();
@@ -1245,6 +1414,11 @@ void MainWindow::startAnimationExportForTest(const QString& path, bool includeCo
         return;
     }
     beginAnimationExport(path, exportOptions(includeColorBar, includeAxes, transparentBackground));
+}
+
+RealBox MainWindow::isoDomainDisplayBoxForTest() const
+{
+    return m_isoWidget->displayDomain();
 }
 
 int MainWindow::backgroundErrorCountForTest() const

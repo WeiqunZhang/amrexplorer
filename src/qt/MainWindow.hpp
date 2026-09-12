@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AspectMode.hpp"
+#include "MappedGeometry.hpp"
 #include "PairGeometry.hpp"
 #include "DatasetWindow.hpp"
 #include "ExportFrame.hpp"
@@ -224,6 +225,9 @@ public:
     // when that batch finishes.
     void configureContourSyncForTest(
         int count, bool logarithmic, std::array<double, 3> slicePositions);
+    // Test-only: change the display mode and contour count alone (range and
+    // positions untouched) and re-render every view through the cache path.
+    void setDisplayModeForTest(DisplayMode mode, int contourCount);
 
     // Test-only: drive the visible-range sync staleness guard deterministically.
     // Gate a sync mid-flight, re-render every panel through the cache path
@@ -419,6 +423,13 @@ public:
     [[nodiscard]] bool fixedScaleStateMatchesForTest(int factor) const;
     void wheelZoomAndPanActiveViewForTest();
     [[nodiscard]] QRectF activeViewVisibleDataWindowForTest() const;
+    // The part of the active view's pixmap inside the viewport, in pixmap
+    // pixels (the warp's own pixels on a mapped grid).
+    [[nodiscard]] QRectF activeViewVisibleImageRectForTest() const;
+    [[nodiscard]] RealBox volumeRegionOfInterestForTest() const
+    {
+        return volumeRegionOfInterest();
+    }
     void panActiveViewForTest(double sceneDeltaX, double sceneDeltaY);
     [[nodiscard]] qreal activeViewScaleForTest() const;
     // Test-only: compare the current transform with ImageView's own fitted
@@ -463,6 +474,56 @@ public:
     }
     [[nodiscard]] bool aspectMenuEnabledForTest() const;
     [[nodiscard]] double activeViewStretchRatioForTest() const;
+    // The isometric view's outlined domain in its display coordinates.
+    [[nodiscard]] RealBox isoDomainDisplayBoxForTest() const;
+    // Test-only: the Aspect Ratio radio shown checked (the mode in effect,
+    // which a mapped grid pins to Physical Size without touching the
+    // preference) and whether both radios are offered.
+    [[nodiscard]] AspectMode aspectMenuCheckedModeForTest() const;
+    [[nodiscard]] bool aspectRadiosEnabledForTest() const;
+    [[nodiscard]] AspectMode aspectModePreferenceForTest() const noexcept
+    {
+        return m_aspectMode;
+    }
+    // Test-only: View > Mapped Grid, driven as the menu drives it, and what
+    // the active view shows: mapped (the physical warp) or the logical grid.
+    void setMappedGridForTest(bool enabled);
+    [[nodiscard]] bool mappedGridMenuEnabledForTest() const;
+    [[nodiscard]] bool displayIsMappedForTest() const;
+    [[nodiscard]] bool activeViewIsMappedForTest() const;
+    // The physical window the active view's mapped warp was last requested
+    // for, on the panel's two axes (x = first in-plane axis); empty until
+    // the demand loop has asked for one.
+    [[nodiscard]] QRectF activeViewMappedWindowForTest() const;
+    // Test-only: a 3-D panel's mapped warp, read without making the panel
+    // active (its border would resize the view): mapped, Fit, re-sliced; the
+    // window drawn (as above); the image; the tile on screen in device
+    // pixels; the tile, canvas and visible rect in scene units; the scale.
+    struct MappedPanelForTest {
+        bool mapped = false;
+        bool fit = false;
+        bool resliced = false;
+        QRectF window;
+        QSize image;
+        QRectF tileDevice;
+        QRectF tile;
+        QRectF canvas;
+        QRectF visible;
+        double scale = 0.0;
+    };
+    [[nodiscard]] MappedPanelForTest mappedPanelForTest(int normal) const;
+    // Test-only: the active view's transform scale and scroll position
+    // {m11, m22, h, v}; a scroll by viewport pixels, as a drag or the scroll
+    // bars would; and the physical region of the plane it holds (x = first
+    // in-plane axis).
+    [[nodiscard]] std::array<double, 4> activeViewTransformAndScrollForTest() const;
+    void scrollActiveViewForTest(int dx, int dy);
+    [[nodiscard]] QRectF activeViewPlaneRegionForTest() const;
+    // Test-only: make the 3-D panel with this normal the active view.
+    void setActiveViewForTest(int normal);
+    // Test-only: the probe readout for a pixmap pixel of the active view
+    // (x from the left, y from the top), as the status bar would show it.
+    [[nodiscard]] QString probeReadoutActiveViewForTest(int x, int y) const;
     // Test-only: the companion (paired) display. Tiles are indexed by layer;
     // rects are in the panel's scene units.
     [[nodiscard]] int panelTileCountForTest(int normal) const;
@@ -603,6 +664,28 @@ private:
         int coordinateSystem = 0;
         SphericalDisplay sphericalDisplay = SphericalDisplay::RZ;
         RealBox displayRegion;
+        // The raster on screen was drawn on the mapped (stretched) grid: the
+        // pixmap is physical and uniform over displayRegion while `plane`
+        // stays logical. gridNodes places plane pixels (bilinear), and
+        // displaySourceIndex, parallel to the pixmap with row 0 at the
+        // bottom, says which plane pixel each pixmap pixel came from. Both
+        // shared with the arrival that produced them, never copied.
+        bool mappedGrid = false;
+        std::shared_ptr<const MappedGridPlane> gridNodes;
+        std::shared_ptr<const std::vector<std::int32_t>> displaySourceIndex;
+        // The canvas a mapped view is laid out on: the node bounding box of
+        // the whole domain on this panel's axes, grown by every arrival's
+        // bounds and never shrunk, so the anchor of the scene (MappedLayout)
+        // holds still while the slice, the region and the window change.
+        std::optional<RealBox> mappedCanvasBounds;
+        // The physical window and device-pixel size the demand loop last
+        // asked the warp for (SliceRequest::displayWindow / displayPixels);
+        // the window is empty until it has asked.
+        RealBox mappedWindow;
+        std::array<int, 2> mappedWindowPixels{0, 0};
+        // The node bounding box of the plane on hand
+        // (SliceDisplayResult::mappedBounds): how far it can serve a window.
+        RealBox mappedNodeBounds;
         std::optional<DisplayCoordinator::RasterGeometry> rasterGeometry;
         double displayMinimum = 0.0;
         double displayMaximum = 1.0;
@@ -805,6 +888,10 @@ private:
     // Whether the open dataset can take a companion: a 3-D plotfile with
     // physical geometry, local or remote, outside a sequence.
     [[nodiscard]] bool canOpenCompanion() const;
+    // Push the primary's geometry to the isometric view, stretched by the
+    // Axis Scaling factors as the slice panels are; physical proportions
+    // otherwise, in either aspect mode.
+    void updateIsoGeometry();
     // Push the pair geometry, in the panels' display proportions, to the
     // isometric view.
     void updatePairedIsoGeometry();
@@ -1055,6 +1142,23 @@ private:
     // also re-requests a raster sized for the new stretch.
     void applyDisplayStretch(PlaneViewState& state);
     void applyDisplayStretches();
+    // The scene layout of a mapped view: its canvas on this panel's axes at
+    // the current axis factors. Nothing until the first mapped arrival has
+    // brought the canvas bounds.
+    [[nodiscard]] std::optional<MappedLayout> mappedLayout(
+        const PlaneViewState& state) const;
+    // Ask the warp for what the viewport shows: the visible physical window
+    // at the viewport's own device pixels, re-sliced first when the plane on
+    // hand cannot serve it (capped below native resolution, or not covering
+    // the window). Runs on every view change; a no-op unless the view shows
+    // a mapped raster on a known canvas.
+    void updateMappedDemand(PlaneViewState& state);
+    // Whether the demand loop has asked the view's warp for a window yet.
+    [[nodiscard]] bool hasMappedWindow(const PlaneViewState& state) const;
+    // A frame spec's per-view mapped windows and pixels, from what each view
+    // shows now (FrameSliceSpec::displayWindows).
+    void fillMappedDisplays(FrameSliceSpec& spec,
+        const std::vector<PlaneViewState*>& views) const;
     // Enable/disable the Aspect Ratio submenu for the current dataset.
     void updateAspectControls();
     void validateVectorMode();
@@ -1149,10 +1253,23 @@ private:
     [[nodiscard]] bool displayIsSphericalWarp() const;
     // Coordinate mapper for a view: logical (x, y)/(r, theta) <-> scene pixels,
     // built from the plane, the warped display region, and the pixmap size.
+    // The volume's "limit to visible region" box: the part of the domain the
+    // three panels show, in the logical coordinates the volume samples.
+    [[nodiscard]] RealBox volumeRegionOfInterest() const;
     [[nodiscard]] PlaneMapping planeMapping(const PlaneViewState& state) const;
     // Enable/disable and re-check the 2-D Spherical menus for the current
     // dataset and display mode (Supersampling applies only to the R-Z warp).
     void updateSphericalControls();
+    // Whether the primary dataset can be drawn on its mapped grid: its
+    // session carries the nodal positions and no companion is open (a pair's
+    // tiles are placed affinely, which a physically uniform pixmap of a
+    // stretched grid does not satisfy).
+    [[nodiscard]] bool mappedGridAvailable() const;
+    // The View > Mapped Grid choice as it applies now: on, and available.
+    [[nodiscard]] bool displayIsMapped() const;
+    // Enable/disable the Mapped Grid menu for the current dataset, with a
+    // tooltip saying why it is off.
+    void updateMappedGridControls();
     // Horizontal and vertical axis names for a spherical layout ({"R","Z"},
     // {"r","theta"}, or {"theta","r"}). Callers pass the displayed view
     // state's mode so labels always describe the raster on screen.
@@ -1167,6 +1284,17 @@ private:
     [[nodiscard]] QString probeReadout(
         const PlaneViewState& state, int x, int displayY) const;
     void rubberBandZoom(PlaneViewState& state, const QRectF& sceneRect);
+    // A rubber band over a mapped view: the scene is the physical canvas, so
+    // the selection is a physical window and the zoom is the view's alone
+    // (updateMappedDemand draws the warp for what it then shows). With sync
+    // on, each other 3-D panel is zoomed to the selection's extent along the
+    // axis it shares with this one, over its own canvas.
+    void mappedRubberBandZoom(PlaneViewState& state, const QRectF& sceneRect);
+    // The normalized plane rect (top-down) of the raster cells drawn inside a
+    // pixmap-pixel rect of a mapped view, found through the source index.
+    // Nothing when no cell was drawn in it.
+    [[nodiscard]] std::optional<QRectF> mappedPlaneBounds(
+        const PlaneViewState& state, const QRectF& pixmapRect) const;
     void applyRubberBandZoom(
         PlaneViewState& state, const QRectF& normalizedRect);
     void beginPanDrag(PlaneViewState& state);
@@ -1283,6 +1411,10 @@ private:
     // DiagnosticsModel's active count tracks.
     [[nodiscard]] int slicesInFlight() const;
     [[nodiscard]] int slicesInFlight(const DatasetLayer& layer) const;
+    // Emits interactiveSlicesSettled once the DiagnosticsModel's active count
+    // is zero; otherwise leaves the signal to the activity that is still
+    // running (a frame prefetch, see the loadActivityChanged handler).
+    void settleIfDrained();
 
     // Slice requests: the debounce timer coalesces into per-view requests.
     // rasterDirty false means the trigger (contour mode/count) cannot change
@@ -1503,7 +1635,12 @@ private:
     // Size radio is further disabled without physical geometry.
     QMenu* m_aspectMenu = nullptr;
     QActionGroup* m_aspectGroup = nullptr;
+    QAction* m_aspectCellCountsAction = nullptr;
     QAction* m_aspectPhysicalAction = nullptr;
+    // View > Mapped Grid: enabled only while the primary dataset carries
+    // nodal positions and no companion is open (updateMappedGridControls).
+    QMenu* m_mappedGridMenu = nullptr;
+    QAction* m_mappedGridAction = nullptr;
     QActionGroup* m_scaleGroup = nullptr;
     QActionGroup* m_levelGroup = nullptr;
     QActionGroup* m_variableGroup = nullptr;
@@ -1569,6 +1706,8 @@ private:
     std::vector<PlaneViewState*> m_pendingViews;
     // OR of the rasterDirty flags of the coalesced pending requests.
     bool m_pendingRasterDirty = false;
+    // A slice landed while other activity ran: the settle is still owed.
+    bool m_settleDeferred = false;
     StopSource m_initialStopSource;
     StopSource m_metadataStopSource;
     DisplayMode m_displayMode = DisplayMode::Raster;
@@ -1577,6 +1716,10 @@ private:
     int m_sphericalSupersample = 4;
     // 2-D spherical display layout (see SliceRequest::sphericalDisplay).
     SphericalDisplay m_sphericalDisplay = SphericalDisplay::RZ;
+    // View > Mapped Grid: draw slices on the plotfile's stretched grid when
+    // it carries one (see SliceRequest::mappedGrid). A persisted preference
+    // that applies whenever the open dataset can honour it.
+    bool m_mappedGrid = false;
     // Persisted preference; the per-axis factors belong to the open dataset
     // and reset to one with each new one (they survive sequence frames).
     AspectMode m_aspectMode = AspectMode::CellCounts;
@@ -1616,6 +1759,10 @@ private:
     double m_lastDisplayMinimum = 0.0;
     double m_lastDisplayMaximum = 1.0;
     bool m_controlsReady = false;
+    // Set while showSlice installs an arrival: the view changes it makes
+    // (a Fit, a stretch) must not ask the warp for a window against the
+    // request that is being replaced; showSlice asks once itself afterwards.
+    bool m_applyingArrival = false;
     std::uint64_t m_generation = 0;
     bool m_closing = false;
     // Owns the Diagnostics panel's counters (background requests, stale

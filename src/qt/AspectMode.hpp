@@ -26,18 +26,20 @@ enum class AspectMode : int {
 // so the smallest factor over the dataset's dimensions is one, which makes a
 // fixed scale N mean N screen pixels per cell along the least stretched axis.
 // Physical proportion is skipped when the dataset has no physical geometry
-// (standalone FABs and MultiFabs carry unit cells anyway) and for 2-D
-// spherical data, where the R-Z warp is already physical and r and theta do
-// not share a unit. Non-positive or non-finite inputs count as one.
+// (standalone FABs and MultiFabs carry unit cells anyway) and when the raster
+// is already physical (`physicalRaster`: the 2-D spherical R-Z warp, where r
+// and theta do not share a unit). A mapped-grid raster is not one of those:
+// its pixels have the raster's own per-axis pitch, so the caller passes
+// PhysicalSize for it. Non-positive or non-finite inputs count as one.
 [[nodiscard]] inline std::array<double, 3> displayStretchPerAxis(
     const DatasetMetadata& metadata, AspectMode mode,
-    const std::array<double, 3>& axisScale, bool spherical)
+    const std::array<double, 3>& axisScale, bool physicalRaster)
 {
     const auto sane = [](double value) {
         return std::isfinite(value) && value > 0.0 ? value : 1.0;
     };
     const bool physical = mode == AspectMode::PhysicalSize
-        && metadata.hasPhysicalGeometry && !spherical
+        && metadata.hasPhysicalGeometry && !physicalRaster
         && !metadata.levels.empty();
     // Indexed only once levels is known non-empty (physical implies it).
     const LevelMetadata* finest = physical
@@ -63,6 +65,73 @@ enum class AspectMode : int {
         }
     }
     return stretch;
+}
+
+// How far a slice raster's pitch exceeds the finest cell along each panel
+// axis: one, except where the output cap (maxSliceOutputDimension, per axis)
+// coarsened the raster along that axis; a mapped view then re-slices a
+// narrower region (updateMappedDemand). A dataset without physical geometry,
+// an empty plane, or a non-finite ratio counts as one.
+[[nodiscard]] inline std::array<double, 2> rasterPitchOverCell(
+    const DatasetMetadata& metadata, const RealBox& logicalRegion,
+    int planeWidth, int planeHeight, std::array<int, 2> axes)
+{
+    std::array<double, 2> ratio{1.0, 1.0};
+    if (!metadata.hasPhysicalGeometry || metadata.levels.empty()
+        || planeWidth <= 0 || planeHeight <= 0) {
+        return ratio;
+    }
+    const auto& finest = metadata.levels[static_cast<std::size_t>(
+        std::clamp(metadata.finestLevel, 0,
+            static_cast<int>(metadata.levels.size()) - 1))];
+    const std::array<int, 2> dims{planeWidth, planeHeight};
+    for (std::size_t i = 0; i < 2; ++i) {
+        if (axes[i] < 0 || axes[i] > 2) {
+            continue;
+        }
+        const auto axis = static_cast<std::size_t>(axes[i]);
+        const auto pitch = (logicalRegion.upper[axis] - logicalRegion.lower[axis])
+            / static_cast<double>(dims[i]);
+        const auto value = pitch / finest.cellSize[axis];
+        if (std::isfinite(value) && value > 0.0) {
+            ratio[i] = value;
+        }
+    }
+    return ratio;
+}
+
+// The user's axis factors alone, sanitized (non-positive or non-finite count
+// as one) and normalized so the smallest is one -- the convention
+// displayStretchPerAxis uses, without the cell-size term.
+[[nodiscard]] inline std::array<double, 3> normalizedAxisScale(
+    const std::array<double, 3>& axisScale)
+{
+    std::array<double, 3> factors{1.0, 1.0, 1.0};
+    double smallest = std::numeric_limits<double>::infinity();
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const auto value = axisScale[axis];
+        factors[axis] = std::isfinite(value) && value > 0.0 ? value : 1.0;
+        smallest = std::min(smallest, factors[axis]);
+    }
+    for (auto& factor : factors) {
+        factor /= smallest;
+    }
+    return factors;
+}
+
+// The isometric wireframe's display coordinates for one dataset: the
+// physical domain stretched about its lower corner by the axis factors, so
+// the 3-D panel follows Axis Scaling as the slice panels do while keeping
+// physical proportions otherwise, in either aspect mode.
+[[nodiscard]] inline Real3 axisScaledDisplayPoint(const RealBox& domain,
+    const std::array<double, 3>& factors, const Real3& point)
+{
+    Real3 display;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        display[axis] = domain.lower[axis]
+            + (point[axis] - domain.lower[axis]) * factors[axis];
+    }
+    return display;
 }
 
 // Whether the screen shows the same number of pixels per physical unit along
