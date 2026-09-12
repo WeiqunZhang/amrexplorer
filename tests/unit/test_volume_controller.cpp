@@ -1658,6 +1658,30 @@ int main(int argc, char** argv)
             settle(application, 500);
             waitFor(application, [&] { return !controller.renderInFlight(); },
                 "the renders from the drags did not finish");
+
+            // A drag is not stopped at the poles: 300 px down from the
+            // default view carries the elevation past straight-down, and +z,
+            // drawn upward before, hangs downward -- the domain seen from
+            // underneath. The same drag back restores it, and a drag of any
+            // length leaves both angles wrapped into (-pi, pi].
+            constexpr double kPi = 3.14159265358979323846;
+            const amrvis::Real3 up{{0.0, 0.0, 1.0}};
+            require(amrvis::projectDirection(view->camera(), up).y < 0.0,
+                "the view does not start with +z upward");
+            dragBy(0, 300);
+            require(std::abs(view->camera().elevation) > kPi / 2.0
+                    && amrvis::projectDirection(view->camera(), up).y > 0.0,
+                "a vertical drag stopped at the pole instead of tumbling past it");
+            dragBy(0, -300);
+            require(amrvis::projectDirection(view->camera(), up).y < 0.0,
+                "dragging back did not bring +z upward again");
+            dragBy(2000, 2000);
+            require(std::abs(view->camera().azimuth) <= kPi
+                    && std::abs(view->camera().elevation) <= kPi,
+                "a long drag ran the camera angles off without bound");
+            settle(application, 500);
+            waitFor(application, [&] { return !controller.renderInFlight(); },
+                "the renders from the tumble did not finish");
         }
         controller.closeWindow();
     }

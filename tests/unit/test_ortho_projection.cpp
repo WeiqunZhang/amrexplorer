@@ -77,6 +77,23 @@ int main()
             "the axis indicator draws +z downward while the view draws it up");
     }
 
+    // Past a pole the camera tumbles on rather than stopping: from the XZ
+    // preset, half a radian short of the pole +y still points up and the +z
+    // face is in front of the viewer; half a radian past it +y hangs down and
+    // the +z face is behind, the domain seen from underneath. The drag no
+    // longer stops at the pole, so the projection must carry on through it.
+    {
+        const auto shortOf = amrvis::OrthoCamera{0.0, -pi / 2.0 + 0.5, 1.0};
+        const auto past = amrvis::OrthoCamera{0.0, -pi / 2.0 - 0.5, 1.0};
+        require(amrvis::projectDirection(shortOf, point(0.0, 1.0, 0.0)).y < 0.0
+                && amrvis::projectDirection(past, point(0.0, 1.0, 0.0)).y > 0.0,
+            "tumbling past the pole did not turn the domain upside down");
+        const auto ceiling = point(1.0, 0.5, 1.0);
+        require(amrvis::projectPoint(shortOf, frame, domain, ceiling).depth > 0.0
+                && amrvis::projectPoint(past, frame, domain, ceiling).depth < 0.0,
+            "tumbling past the pole did not carry the +z face behind the viewer");
+    }
+
     // Pinned from the iso view's projection formula: the upper corner under
     // azimuth 30 deg, elevation 30 deg, zoom 1.
     const amrvis::OrthoCamera oblique{30.0 * pi / 180.0, 30.0 * pi / 180.0, 1.0};
@@ -130,7 +147,8 @@ int main()
     // domain, and points away from the viewer (toward decreasing depth).
     for (const auto& camera : {oblique, zoomed, amrvis::orthoPresetXY,
              amrvis::orthoPresetXZ, amrvis::orthoPresetYZ,
-             amrvis::OrthoCamera{-2.3, 1.1, 0.7}}) {
+             amrvis::OrthoCamera{-2.3, 1.1, 0.7}, amrvis::OrthoCamera{0.4, 2.0, 1.0},
+             amrvis::OrthoCamera{-1.0, -2.5, 1.3}}) {
         for (const auto& target : {point(2.0, 1.0, 1.0), point(0.0, 0.0, 0.0),
                  point(1.3, 0.2, 0.9), point(1.0, 0.5, 0.5)}) {
             const auto projected = amrvis::projectPoint(

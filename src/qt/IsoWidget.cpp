@@ -24,6 +24,14 @@ namespace {
 
 constexpr double pi = 3.14159265358979323846;
 
+// An angle brought into (-pi, pi]: the rotation is periodic, and a long drag
+// would otherwise run the numbers off without bound.
+double wrapAngle(double angle) noexcept
+{
+    const auto turns = std::floor((angle + pi) / (2.0 * pi));
+    return angle - turns * 2.0 * pi;
+}
+
 // Cube corner indexing: bit 0 = x side, bit 1 = y side, bit 2 = z side.
 constexpr std::array<std::array<int, 2>, 12> boxEdges{{
     {{0, 1}}, {{2, 3}}, {{4, 5}}, {{6, 7}},
@@ -376,10 +384,17 @@ void IsoWidget::mouseMoveEvent(QMouseEvent* event)
         // while a drag right slid the near face left -- which reads as the
         // horizontal being backwards, since the vertical is what everything
         // else does too.
-        m_camera.azimuth += static_cast<double>(delta.x()) * sensitivity;
-        m_camera.elevation += static_cast<double>(delta.y()) * sensitivity;
-        m_camera.elevation = std::clamp(
-            m_camera.elevation, -pi / 2.0 + 0.01, pi / 2.0 - 0.01);
+        // Neither angle is limited: a vertical drag tumbles the domain on
+        // through straight-up and straight-down and shows it upside down,
+        // where a horizontal drag, still a turn about the world z axis,
+        // reads the other way on screen -- the nature of an azimuth and
+        // elevation camera, not a fault. The projection, the ray caster and
+        // the wire take any angle; only the drag once stopped short of the
+        // poles.
+        m_camera.azimuth = wrapAngle(
+            m_camera.azimuth + static_cast<double>(delta.x()) * sensitivity);
+        m_camera.elevation = wrapAngle(
+            m_camera.elevation + static_cast<double>(delta.y()) * sensitivity);
         update();
         emit cameraChanged();
         event->accept();

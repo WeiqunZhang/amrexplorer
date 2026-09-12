@@ -207,8 +207,8 @@ The main controls are:
    the screen does not show the same length per pixel along both axes (see
    [Aspect ratio and axis scaling](#aspect-ratio-and-axis-scaling)).
 6. **Isometric view** shows the domain, grid boxes, and current slice planes;
-   **View > Volume Rendering...** opens the same view with the field
-   ray-cast into it.
+   drag to rotate and wheel to zoom. **View > Volume Rendering...** opens the
+   same view with the field ray-cast into it.
 7. **Color Scale** reports the active value-to-color mapping.
 8. **Animation** controls a 3-D plane sweep or an open plotfile sequence.
 
@@ -451,6 +451,8 @@ line of sight, so translucent structure inside the domain shows through. The
 window has its own copy of the isometric view -- drag to rotate, wheel
 to zoom, and the **XY**, **XZ**, **YZ** buttons for the axis-aligned views --
 with the domain outline and the slice planes drawn over the rendered volume.
+A drag tumbles the view freely past the top and the bottom, so the domain,
+the volume and the isosurface can be seen from underneath.
 The AMR grid boxes can be drawn too, though they start off here.
 
 The window follows the main window: the field, the AMR level, the range mode
